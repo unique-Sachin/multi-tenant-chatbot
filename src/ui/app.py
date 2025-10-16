@@ -190,7 +190,7 @@ def fetch_websites():
         st.session_state.websites = result
 
 
-def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
+def send_message_stream(question: str, namespace: str, stream_placeholder) -> Optional[Dict]:
     """Send message to streaming chat API and return final response."""
     headers = {}
     if st.session_state.token:
@@ -218,8 +218,7 @@ def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
                 st.error(f"API Error: {response.status_code} - {response.text}")
                 return None
             
-            # Create a placeholder for streaming response
-            response_placeholder = st.empty()
+            # Process streaming response using the provided placeholder
             current_response = ""
             citations = []
             is_out_of_scope = False
@@ -237,7 +236,14 @@ def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
                             if data_json.get('type') == 'token':
                                 current_response = data_json.get('content', '')
                                 # Update the placeholder with current response
-                                response_placeholder.markdown(f"🤖 **Assistant:** {current_response}")
+                                with stream_placeholder.container():
+                                    render_message({
+                                        "content": current_response,
+                                        "citations": [],
+                                        "is_user": False,
+                                        "is_streaming": True,
+                                        "timestamp": datetime.now().isoformat()
+                                    }, False)
                             
                             elif data_json.get('type') == 'complete':
                                 citations = data_json.get('citations', [])
@@ -245,8 +251,8 @@ def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
                                 processing_time = data_json.get('processing_time_ms', 0)
                                 retrieval_steps = data_json.get('retrieval_steps', {})
                                 
-                                # Clear placeholder and return final response
-                                response_placeholder.empty()
+                                # Return final response without clearing placeholder
+                                # The placeholder will be replaced with the final message
                                 return {
                                     'answer': current_response,
                                     'citations': citations,
@@ -257,15 +263,13 @@ def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
                             
                             elif data_json.get('type') == 'error':
                                 error_msg = data_json.get('content', 'Unknown error')
-                                st.error(f"Error: {error_msg}")
-                                response_placeholder.empty()
+                                stream_placeholder.error(f"Error: {error_msg}")
                                 return None
                                 
                         except json.JSONDecodeError:
                             continue
             
             # If we get here, return whatever we have
-            response_placeholder.empty()
             return {
                 'answer': current_response or "Sorry, I couldn't generate a response.",
                 'citations': citations,
@@ -275,7 +279,7 @@ def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
             }
             
     except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+        stream_placeholder.error(f"Connection error: {str(e)}")
         return None
 
 
@@ -447,43 +451,53 @@ def render_citations(citations: List[str]):
         )
 
 
-def render_message(message: Dict[str, Any], is_user: bool = False):
+def render_message(message: Dict[str, Any], show_metadata: bool = True):
     """Render a chat message."""
+    is_user = message.get("is_user", False)
+    is_streaming = message.get("is_streaming", False)
+    
     if is_user:
         with st.chat_message("user"):
             st.write(message["content"])
     else:
         with st.chat_message("assistant"):
-            st.write(message["content"])
-            
-            # Only show retrieval steps and citations if the message is not out of scope
-            is_out_of_scope = message.get("is_out_of_scope", False)
-            
-            if not is_out_of_scope and message.get("retrieval_steps"):
-                render_retrieval_steps(message["retrieval_steps"])
-            
-            if not is_out_of_scope and message.get("citations"):
-                render_citations(message["citations"])
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                processing_time = message.get("processing_time_ms", 0)
-                st.caption(f"⏱️ {processing_time}ms")
-            
-            with col2:
-                is_grounded = not message.get("is_out_of_scope", False)
-                status = "🟢 Grounded" if is_grounded else "🟡 Refusal"
-                st.caption(status)
-            
-            with col3:
-                timestamp = message.get("timestamp", "")
-                if timestamp:
-                    try:
-                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                        st.caption(f"🕐 {dt.strftime('%H:%M:%S')}")
-                    except:
-                        st.caption(f"🕐 {timestamp}")
+            # For streaming messages, show simpler content
+            if is_streaming:
+                st.write(message["content"])
+                if message["content"]:  # Only show typing indicator if there's no content yet
+                    st.caption("🤖 Thinking...")
+            else:
+                st.write(message["content"])
+                
+                # Only show retrieval steps and citations if the message is not out of scope and not streaming
+                is_out_of_scope = message.get("is_out_of_scope", False)
+                
+                if show_metadata and not is_out_of_scope and message.get("retrieval_steps"):
+                    render_retrieval_steps(message["retrieval_steps"])
+                
+                if show_metadata and not is_out_of_scope and message.get("citations"):
+                    render_citations(message["citations"])
+                
+                if show_metadata:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        processing_time = message.get("processing_time_ms", 0)
+                        st.caption(f"⏱️ {processing_time}ms")
+                    
+                    with col2:
+                        is_grounded = not message.get("is_out_of_scope", False)
+                        status = "🟢 Grounded" if is_grounded else "🟡 Refusal"
+                        st.caption(status)
+                    
+                    with col3:
+                        timestamp = message.get("timestamp", "")
+                        if timestamp:
+                            try:
+                                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                                st.caption(f"🕐 {dt.strftime('%H:%M:%S')}")
+                            except:
+                                st.caption(f"🕐 {timestamp}")
 
 
 def render_sidebar():
@@ -574,17 +588,18 @@ def render_chat_page():
     
     render_sidebar()
     
-    # Chat history
+    # Chat history container - this will hold all messages including streaming
     chat_container = st.container()
     
+    # Display existing chat history
     with chat_container:
         if not st.session_state.chat_history:
             st.info("👋 Hello! Ask me anything about the selected organization's content!")
         else:
             for message in st.session_state.chat_history:
-                render_message(message, message.get("is_user", False))
+                render_message(message)
     
-    # Chat input
+    # Chat input form at the bottom
     st.markdown("---")
     
     with st.form(key="chat_form", clear_on_submit=True):
@@ -596,6 +611,7 @@ def render_chat_page():
         
         send_clicked = st.form_submit_button("📤 Send", type="primary", use_container_width=True)
     
+    # Handle message sending
     if send_clicked and user_input and user_input.strip():
         question = user_input.strip()
         
@@ -607,29 +623,39 @@ def render_chat_page():
         }
         st.session_state.chat_history.append(user_message)
         
-        # Show user message immediately
+        # Create a placeholder for the streaming response in the chat container
         with chat_container:
-            render_message(user_message, True)
+            # Show user message
+            render_message(user_message)
+            
+            # Create placeholder for streaming response - this keeps it in the chat container
+            stream_placeholder = st.empty()
         
-        # Show "thinking" indicator and stream response
-        with st.spinner("🤔 Thinking..."):
-            response = send_message_stream(question, st.session_state.current_namespace)
+        # Stream the response
+        response = send_message_stream(question, st.session_state.current_namespace, stream_placeholder)
         
         if response:
-            # Add bot response to history
-            bot_message = {
-                "content": response.get("answer", "Sorry, I couldn't generate a response."),
-                "citations": response.get("citations", []),
-                "retrieval_steps": response.get("retrieval_steps", {}),
-                "is_user": False,
-                "is_out_of_scope": response.get("is_out_of_scope", False),
-                "processing_time_ms": response.get("processing_time_ms", 0),
-                "timestamp": datetime.now().isoformat()
-            }
+            # Replace the streaming placeholder with the final message
+            with stream_placeholder.container():
+                bot_message = {
+                    "content": response.get("answer", "Sorry, I couldn't generate a response."),
+                    "citations": response.get("citations", []),
+                    "retrieval_steps": response.get("retrieval_steps", {}),
+                    "is_user": False,
+                    "is_out_of_scope": response.get("is_out_of_scope", False),
+                    "processing_time_ms": response.get("processing_time_ms", 0),
+                    "timestamp": datetime.now().isoformat()
+                }
+                render_message(bot_message)
+            
+            # Add to history for persistence
             st.session_state.chat_history.append(bot_message)
             
             # Refresh conversations list
             fetch_conversations()
+        else:
+            # Clear the placeholder if no response
+            stream_placeholder.empty()
         
         st.rerun()
 

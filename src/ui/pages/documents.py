@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 # Get API URL from environment or use default
-API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-747d3d71730d.herokuapp.com")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 def get_auth_headers():

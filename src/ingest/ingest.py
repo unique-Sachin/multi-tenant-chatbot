@@ -38,7 +38,7 @@ class ZibtekIngestor:
         Args:
             domain: Website domain to crawl (defaults to DATASET_DOMAIN env var)
             namespace: Pinecone namespace for this organization (defaults to 'zibtek')
-            max_pages: Maximum pages to crawl (defaults to 50)
+            max_pages: Maximum pages to crawl (defaults to 500)
         """
         self.domain = domain or os.getenv("DATASET_DOMAIN", "https://www.zibtek.com")
         self.namespace = namespace or "zibtek"
@@ -56,7 +56,7 @@ class ZibtekIngestor:
         # Configuration
         self.chunk_size = 1000  # tokens
         self.chunk_overlap = 200  # tokens
-        self.max_pages = max_pages or 50  # limit for testing
+        self.max_pages = max_pages or 500  # limit for testing
         self.crawl_timestamp = datetime.now().isoformat()
         
         print(f"✅ Ingestor initialized")

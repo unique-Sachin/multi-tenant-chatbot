@@ -40,7 +40,8 @@ from storage.auth import (
 )
 from storage.conversations import (
     get_user_conversations, get_conversation_messages,
-    create_or_update_session, delete_conversation
+    create_or_update_session, delete_conversation,
+    get_last_conversation_message, get_last_conversation_messages
 )
 from storage.documents import (
     get_documents_by_org, get_documents_by_namespace,
@@ -168,13 +169,13 @@ async def lifespan(app: FastAPI):
         # Initialize LLM
         print("🤖 Initializing LLM...")
         llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt-4-turbo",
             temperature=0,
             timeout=30
         )
         
         # Initialize tokenizer for cost estimation
-        tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
+        tokenizer = tiktoken.encoding_for_model("gpt-4-turbo")
         
         print("✅ All services initialized successfully!")
         
@@ -211,12 +212,12 @@ def count_tokens(text: str) -> int:
 def estimate_cost(input_tokens: int, output_tokens: int) -> float:
     """Estimate API cost based on token counts.
     
-    GPT-4o-mini pricing (as of 2024):
-    - Input: $0.00015 per 1K tokens
-    - Output: $0.0006 per 1K tokens
+    GPT-4-turbo pricing (as of 2024):
+    - Input: $0.01 per 1K tokens
+    - Output: $0.03 per 1K tokens
     """
-    input_cost = (input_tokens / 1000) * 0.00015
-    output_cost = (output_tokens / 1000) * 0.0006
+    input_cost = (input_tokens / 1000) * 0.01
+    output_cost = (output_tokens / 1000) * 0.03
     return input_cost + output_cost
 
 
@@ -287,7 +288,7 @@ async def log_chat_interaction(
             latency_ms=response.processing_time_ms,
             cost_cents=int(cost * 100),  # Convert to cents
             citations=[{"url": url} for url in response.citations],
-            model="gpt-4o-mini",
+            model="gpt-4-turbo",
             retrieved_urls=response.citations,
             rerank_scores=rerank_scores or {},
             retrieval_steps=response.retrieval_steps
@@ -574,22 +575,56 @@ async def chat(request: ChatRequest, http_request: Request):
         
         print(f"📄 Using top {len(top_docs)} documents for context")
         
-        # Step 4: Build context and prompt
+        # Step 4: Get conversation history for context (if session exists)
+        conversation_history = ""
+        if request.session_id:
+            print(f"💬 Checking for conversation history in session: {request.session_id}")
+            last_messages = get_last_conversation_messages(user.id, request.session_id, namespace, limit=3)
+            
+            # Filter out out-of-scope messages and build history
+            valid_messages = [msg for msg in last_messages if not msg.is_out_of_scope]
+            
+            if valid_messages:
+                history_parts = []
+                for i, msg in enumerate(valid_messages, 1):
+                    history_parts.append(f"Previous conversation {i}:")
+                    history_parts.append(f"User's question: {msg.user_query}")
+                    history_parts.append(f"Your answer: {msg.answer}")
+                    history_parts.append("")  # Empty line for separation
+                
+                conversation_history = "\n".join(history_parts)
+                print(f"✅ Found {len(valid_messages)} previous conversations - will be included as context")
+            else:
+                print(f"📭 No previous valid conversations found in this session")
+        
+        # Step 5: Build context and prompt
         context = build_context_from_docs(top_docs)
         system_prompt = guards.system_prompt()
+        
+        # Build the user prompt with conversation history if available
+        user_prompt_parts = []
+        
+        if conversation_history:
+            user_prompt_parts.append(conversation_history)
+        
+        user_prompt_parts.extend([
+            f"Current question: {clean_question}",
+            "",
+            context,
+            "",
+            "Please answer the current question using ONLY the information provided in the CONTEXT above. If this is a follow-up question, consider the previous conversation for context but base your answer on the provided CONTEXT. Always cite the URL(s) where you found the information."
+        ])
+        
+        user_prompt = "\n".join(user_prompt_parts)
         
         # Create messages
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"""Question: {clean_question}
-
-{context}
-
-Please answer the question using ONLY the information provided in the CONTEXT above. Always cite the URL(s) where you found the information.""")
+            HumanMessage(content=user_prompt)
         ]
         
-        # Count input tokens
-        full_prompt = system_prompt + clean_question + context
+        # Count input tokens (include conversation history)
+        full_prompt = system_prompt + user_prompt
         input_tokens = count_tokens(full_prompt)
         
         # Step 5: Generate response with LLM
@@ -835,12 +870,49 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             # Generate response
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
             
+            # Get conversation history for context (if session exists)
+            conversation_history = ""
+            if request.session_id:
+                print(f"💬 Checking for conversation history in session: {request.session_id}")
+                last_messages = get_last_conversation_messages(user.id, request.session_id, namespace, limit=3)
+                
+                # Filter out out-of-scope messages and build history
+                valid_messages = [msg for msg in last_messages if not msg.is_out_of_scope]
+                
+                if valid_messages:
+                    history_parts = []
+                    for i, msg in enumerate(valid_messages, 1):
+                        history_parts.append(f"Previous conversation {i}:")
+                        history_parts.append(f"User's question: {msg.user_query}")
+                        history_parts.append(f"Your answer: {msg.answer}")
+                        history_parts.append("")  # Empty line for separation
+                    
+                    conversation_history = "\n".join(history_parts)
+                    print(f"✅ Found {len(valid_messages)} previous conversations - will be included as context")
+                else:
+                    print(f"📭 No previous valid conversations found in this session")
+            
             # Prepare context and messages
             context = "\n\n".join([doc.page_content for doc in filtered_docs])
             citations = extract_citations(filtered_docs)  # Use the proper citation extraction function
             
             system_prompt = guards.system_prompt()
-            user_prompt = f"Context:\n{context}\n\nQuestion: {request.question}"
+            
+            # Build the user prompt with conversation history if available
+            user_prompt_parts = []
+            
+            if conversation_history:
+                user_prompt_parts.append(conversation_history)
+            
+            user_prompt_parts.extend([
+                f"Current question: {request.question}",
+                "",
+                f"Context:\n{context}",
+                "",
+                "Please answer the current question using ONLY the information provided in the CONTEXT above. If this is a follow-up question, consider the previous conversation for context but base your answer on the provided CONTEXT. Always cite the URL(s) where you found the information."
+            ])
+            
+            user_prompt = "\n".join(user_prompt_parts)
             
             # Get LLM response with streaming
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
@@ -873,7 +945,7 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
                 latency_ms=processing_time,
                 cost_cents=0,  # TODO: Calculate actual cost if needed
                 citations=[{"url": url} for url in citations],
-                model="gpt-4o-mini",
+                model="gpt-4-turbo",
                 retrieved_urls=citations,
                 rerank_scores=rerank_scores,
                 retrieval_steps=retrieval_steps
@@ -999,7 +1071,7 @@ async def get_website_detail(website_id: str):
 
 
 @app.post("/websites/{website_id}/ingest")
-async def start_ingestion(website_id: str, max_pages: int = 50):
+async def start_ingestion(website_id: str, max_pages: int = 500):
     """Start ingestion for a website."""
     # Get website details
     website = get_website(website_id)

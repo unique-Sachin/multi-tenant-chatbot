@@ -29,7 +29,7 @@ The system now supports **multiple organizations**, each with isolated knowledge
 - **Background Jobs**: Async ingestion with progress tracking
 - **Document Upload**: PDF, TXT, and DOCX file upload and processing
 - **User Authentication**: JWT-based user registration and login
-- **Conversation History**: Persistent chat sessions with history
+- **Conversation History**: Persistent chat sessions with context-aware follow-ups
 - **Hybrid Search**: Vector + BM25 keyword search with RRF fusion
 - **Performance Caching**: Redis-based caching for improved response times
 - **RAGAS Evaluation**: Comprehensive evaluation framework with detailed metrics
@@ -398,14 +398,22 @@ The system includes a complete authentication system:
 - **User Registration**: Email/password signup
 - **Secure Login**: JWT-based authentication
 - **Session Persistence**: Login state maintained across browser sessions
-- **Conversation History**: Chat history tied to user accounts
+- **Conversation History**: Chat history tied to user accounts with context awareness
 - **Organization Access**: Users can access multiple organizations
+
+### Conversation History & Context
+- **Context-Aware Follow-ups**: Follow-up questions automatically include previous 3 Q&A pairs as context
+- **Session Continuity**: Each conversation session maintains its own history thread
+- **Extended Context**: Last 3 relevant conversations provide better context understanding
+- **Multi-tenant Support**: Conversation history is isolated by organization namespace
 
 ### Usage
 1. Visit the Streamlit UI
 2. Sign up with email and password
 3. Login to access the chat interface
 4. Your conversations are automatically saved
+5. Ask follow-up questions that reference previous responses
+6. Each organization maintains separate conversation contexts
 
 ## Evaluation Framework
 
@@ -553,7 +561,7 @@ You can modify these settings in `src/ingest/ingest.py`:
 ```python
 self.chunk_size = 1000      # tokens per chunk
 self.chunk_overlap = 200    # token overlap
-self.max_pages = 50         # limit for testing
+self.max_pages = 500         # limit for testing
 ```
 
 ### Guardrails Settings
@@ -657,7 +665,7 @@ mypy src/
 - **Authentication**: JWT tokens with bcrypt password hashing
 - **Caching**: Redis for performance optimization
 - **Embeddings**: OpenAI text-embedding-3-small
-- **LLM**: OpenAI GPT-4o-mini for response generation
+- **LLM**: OpenAI GPT-4-turbo for response generation
 - **Reranking**: Cohere for result reranking
 - **Web Scraping**: Trafilatura with BeautifulSoup fallback
 - **Search**: Hybrid search (Vector + BM25) with RRF fusion

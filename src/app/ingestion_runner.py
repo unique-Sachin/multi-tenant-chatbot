@@ -20,7 +20,7 @@ def run_ingestion_job(
     job_id: str,
     domain: str,
     namespace: str,
-    max_pages: int = 50
+    max_pages: int = 500
 ) -> Dict[str, Any]:
     """Run ingestion pipeline for a website with progress tracking.
     

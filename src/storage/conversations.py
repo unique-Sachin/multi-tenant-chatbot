@@ -116,6 +116,102 @@ def get_conversation_messages(user_id: str, session_id: str, namespace: str) -> 
         return []
 
 
+def get_last_conversation_messages(user_id: str, session_id: str, namespace: str, limit: int = 3) -> List[ConversationMessage]:
+    """Get the last N messages from a conversation session (most recent Q&A pairs)."""
+    if not supabase:
+        print("❌ Supabase client not initialized")
+        return []
+    
+    try:
+        result = supabase.table("chat_logs")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("session_id", session_id)\
+            .eq("namespace", namespace)\
+            .order("ts", desc=True)\
+            .limit(limit)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            messages = []
+            for msg_data in reversed(result.data):  # Reverse to get chronological order
+                # Convert citations from DB format
+                citations = []
+                if msg_data.get('citations'):
+                    citations = [c.get('url', '') for c in msg_data['citations'] if isinstance(c, dict)]
+                elif msg_data.get('retrieved_urls'):
+                    citations = msg_data['retrieved_urls']
+                
+                messages.append(ConversationMessage(
+                    id=msg_data['id'],
+                    user_id=msg_data['user_id'],
+                    namespace=msg_data.get('namespace', 'zibtek'),
+                    session_id=msg_data['session_id'],
+                    user_query=msg_data['user_query'],
+                    answer=msg_data['answer'],
+                    citations=citations,
+                    is_out_of_scope=msg_data.get('is_oos', False),
+                    processing_time_ms=msg_data.get('latency_ms', 0),
+                    retrieval_steps=msg_data.get('retrieval_steps', {}),
+                    created_at=datetime.fromisoformat(msg_data['ts'].replace('Z', '+00:00'))
+                ))
+            
+            return messages
+        
+        return []
+        
+    except Exception as e:
+        print(f"❌ Error getting last conversation messages: {e}")
+        return []
+
+
+def get_last_conversation_message(user_id: str, session_id: str, namespace: str) -> Optional[ConversationMessage]:
+    """Get the last message from a conversation session (most recent Q&A pair)."""
+    if not supabase:
+        print("❌ Supabase client not initialized")
+        return None
+    
+    try:
+        result = supabase.table("chat_logs")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("session_id", session_id)\
+            .eq("namespace", namespace)\
+            .order("ts", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            msg_data = result.data[0]
+            
+            # Convert citations from DB format
+            citations = []
+            if msg_data.get('citations'):
+                citations = [c.get('url', '') for c in msg_data['citations'] if isinstance(c, dict)]
+            elif msg_data.get('retrieved_urls'):
+                citations = msg_data['retrieved_urls']
+            
+            return ConversationMessage(
+                id=msg_data['id'],
+                user_id=msg_data['user_id'],
+                namespace=msg_data.get('namespace', 'zibtek'),
+                session_id=msg_data['session_id'],
+                user_query=msg_data['user_query'],
+                answer=msg_data['answer'],
+                citations=citations,
+                is_out_of_scope=msg_data.get('is_oos', False),
+                processing_time_ms=msg_data.get('latency_ms', 0),
+                retrieval_steps=msg_data.get('retrieval_steps', {}),
+                created_at=datetime.fromisoformat(msg_data['ts'].replace('Z', '+00:00'))
+            )
+        
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error getting last conversation message: {e}")
+        return None
+
+
 def create_or_update_session(user_id: str, session_id: str, namespace: str, title: Optional[str] = None) -> bool:
     """Create or update a conversation session."""
     if not supabase:

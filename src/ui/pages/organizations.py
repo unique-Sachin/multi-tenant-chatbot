@@ -334,7 +334,7 @@ def create_website(org_id: str, url: str):
         st.error(f"Error adding website: {e}")
 
 
-def start_ingestion(website_id: str, max_pages: int = 50):
+def start_ingestion(website_id: str, max_pages: int = 500):
     """Start ingestion for a website."""
     try:
         response = requests.post(
