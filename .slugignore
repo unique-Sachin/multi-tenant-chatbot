@@ -1,0 +1,42 @@
+# Exclude test files
+test_*.py
+**/test_*.py
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Exclude development files
+.git
+.gitignore
+*.md
+README.md
+docs/
+
+# Exclude local development files
+.env
+.venv/
+venv/
+env/
+
+# Exclude UI (we're only deploying the API)
+src/ui/
+
+# Exclude evaluation files
+eval.csv
+eval_results.json
+src/eval/
+
+# Exclude demo and debug scripts
+run_demo.py
+debug_auth.py
+
+# Exclude infrastructure files
+infra/
+setup-docker.sh
+docker-compose.yml
+Dockerfile
+
+# Exclude deployment scripts
+deploy-heroku.sh
+HEROKU_DEPLOYMENT.md
+DEPLOY_QUICK.md

@@ -1,0 +1,53 @@
+[project]
+name = "zibtek-assgn"
+version = "0.1.0"
+description = "AI Chatbot for Zibtek - Custom Dataset Interview Assignment"
+authors = ["Sachin Mishra"]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "streamlit",
+    "langchain",
+    "langchain-openai",
+    "openai",
+    "pinecone-client",
+    "trafilatura",
+    "beautifulsoup4",
+    "rank-bm25",
+    "redis",
+    "tenacity",
+    "slowapi",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "python-dotenv",
+    "pydantic",
+    "numpy",
+    "scipy",
+    "tiktoken",
+    "cohere",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+    "pytest-asyncio",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
