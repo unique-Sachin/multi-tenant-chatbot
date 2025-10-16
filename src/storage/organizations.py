@@ -146,6 +146,49 @@ def get_organization_by_slug(slug: str) -> Optional[OrganizationResponse]:
         return None
 
 
+def get_organization_by_namespace(namespace: str) -> Optional[Dict[str, Any]]:
+    """Get organization and website info by namespace.
+    
+    Args:
+        namespace: The namespace to look up
+        
+    Returns:
+        Dict with organization and website info, or None if not found
+    """
+    if not supabase:
+        return None
+    
+    # Handle default Zibtek namespace
+    if namespace == "zibtek":
+        return {
+            "org_name": "Zibtek",
+            "org_description": "Leading software development company",
+            "website_url": "https://zibtek.com",
+            "namespace": "zibtek"
+        }
+    
+    try:
+        # Get website by namespace first
+        website_result = supabase.table("websites").select("*, organizations(*)").eq("namespace", namespace).execute()
+        
+        if hasattr(website_result, 'data') and website_result.data:
+            website = website_result.data[0]
+            org = website.get('organizations')
+            
+            if org:
+                return {
+                    "org_name": org.get('name', 'Unknown Organization'),
+                    "org_description": org.get('description', ''),
+                    "website_url": website.get('url', ''),
+                    "namespace": namespace
+                }
+        
+        return None
+    except Exception as e:
+        print(f"Error fetching organization by namespace: {e}")
+        return None
+
+
 def list_organizations() -> List[OrganizationResponse]:
     """List all organizations."""
     if not supabase:

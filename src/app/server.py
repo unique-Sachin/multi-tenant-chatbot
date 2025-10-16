@@ -599,7 +599,12 @@ async def chat(request: ChatRequest, http_request: Request):
         
         # Step 5: Build context and prompt
         context = build_context_from_docs(top_docs)
-        system_prompt = guards.system_prompt()
+        
+        # Get organization info for dynamic system prompt
+        from storage.organizations import get_organization_by_namespace
+        org_info = get_organization_by_namespace(namespace)
+        
+        system_prompt = guards.system_prompt(org_info)
         
         # Build the user prompt with conversation history if available
         user_prompt_parts = []
@@ -896,7 +901,11 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             context = "\n\n".join([doc.page_content for doc in filtered_docs])
             citations = extract_citations(filtered_docs)  # Use the proper citation extraction function
             
-            system_prompt = guards.system_prompt()
+            # Get organization info for dynamic system prompt
+            from storage.organizations import get_organization_by_namespace
+            org_info = get_organization_by_namespace(namespace)
+            
+            system_prompt = guards.system_prompt(org_info)
             
             # Build the user prompt with conversation history if available
             user_prompt_parts = []
