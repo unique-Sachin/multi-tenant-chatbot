@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 import tiktoken
@@ -41,6 +41,10 @@ from storage.auth import (
 from storage.conversations import (
     get_user_conversations, get_conversation_messages,
     create_or_update_session, delete_conversation
+)
+from storage.documents import (
+    get_documents_by_org, get_documents_by_namespace,
+    delete_document_record, get_document_stats
 )
 from utils.cache import create_cache_manager, CacheManager
 from utils.retries import retry_openai, retry_pinecone, retry_cohere
@@ -1140,6 +1144,142 @@ async def clear_all_hybrid_caches():
         "message": "Cleared all hybrid retriever caches",
         "note": "Retrievers will be rebuilt on-demand per namespace"
     }
+
+
+# ===== DOCUMENT UPLOAD ENDPOINT =====
+
+@app.post("/documents/upload")
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    org_id: str = Form(...)
+):
+    """Upload and ingest a document (PDF, TXT, DOCX) into an organization's namespace.
+    
+    Args:
+        file: The uploaded file
+        org_id: Organization ID (namespace will be auto-generated from org slug)
+        
+    Returns:
+        Ingestion result with status and metadata
+    """
+    user = await get_current_user(request)
+    
+    # Import here to avoid startup dependency
+    from ingest.document_ingest import DocumentIngestor
+    
+    try:
+        # Validate file format
+        if not DocumentIngestor.is_supported_format(file.filename):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format. Supported: {', '.join(DocumentIngestor.get_supported_formats())}"
+            )
+        
+        # Check file size (max 10MB)
+        file_content = await file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        if file_size_mb > 10:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large ({file_size_mb:.1f}MB). Maximum size is 10MB"
+            )
+        
+        # Get organization to generate namespace
+        org = get_organization(org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        # Generate namespace from organization slug
+        from storage.organizations import create_namespace
+        namespace = create_namespace(org.slug)
+        
+        print(f"📤 Upload request from user {user.email}")
+        print(f"   File: {file.filename} ({file_size_mb:.2f}MB)")
+        print(f"   Organization: {org.name} (slug: {org.slug})")
+        print(f"   Namespace: {namespace}")
+        
+        # Initialize ingestor
+        ingestor = DocumentIngestor(namespace=namespace)
+        
+        # Ingest document
+        result = ingestor.ingest_document(
+            file_content=file_content,
+            filename=file.filename,
+            org_id=org_id,
+            user_id=user.id,
+            metadata={
+                'uploaded_by': user.id,
+                'uploaded_by_email': user.email
+            }
+        )
+        
+        if result['success']:
+            return {
+                "success": True,
+                "message": f"Successfully ingested {file.filename}",
+                "doc_id": result['doc_id'],
+                "chunks": result['chunks'],
+                "characters": result['characters'],
+                "namespace": namespace,
+                "elapsed_seconds": result['elapsed_seconds']
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=result.get('error', 'Unknown error during ingestion')
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error uploading document: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing document: {str(e)}"
+        )
+
+
+# ===== DOCUMENT MANAGEMENT ENDPOINTS =====
+
+@app.get("/documents/org/{org_id}")
+async def get_org_documents(request: Request, org_id: str):
+    """Get all documents for an organization."""
+    user = await get_current_user(request)
+    documents = get_documents_by_org(org_id)
+    return {"documents": documents}
+
+
+@app.get("/documents/namespace/{namespace}")
+async def get_namespace_documents(request: Request, namespace: str):
+    """Get all documents in a namespace."""
+    user = await get_current_user(request)
+    documents = get_documents_by_namespace(namespace)
+    return {"documents": documents}
+
+
+@app.get("/documents/stats")
+async def get_docs_stats(request: Request, org_id: Optional[str] = None):
+    """Get document statistics."""
+    user = await get_current_user(request)
+    stats = get_document_stats(org_id)
+    return stats
+
+
+@app.delete("/documents/{doc_id}")
+async def delete_document(request: Request, doc_id: str):
+    """Delete a document record (vectors must be deleted separately from Pinecone)."""
+    user = await get_current_user(request)
+    success = delete_document_record(doc_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete document"
+        )
+    
+    return {"success": True, "message": f"Document {doc_id} deleted"}
 
 
 if __name__ == "__main__":

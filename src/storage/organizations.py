@@ -79,12 +79,15 @@ def create_slug(name: str) -> str:
     return slug
 
 
-def create_namespace(org_slug: str, website_url: str) -> str:
-    """Create unique namespace for website."""
-    from urllib.parse import urlparse
-    domain = urlparse(website_url).netloc.replace('www.', '')
-    domain = re.sub(r'[^a-z0-9]+', '-', domain.lower())
-    namespace = f"{org_slug}-{domain}"
+def create_namespace(org_slug: str, website_url: str = None) -> str:
+    """Create namespace for organization.
+    
+    All websites and documents under the same organization share one namespace.
+    This enables cross-website/document search within the organization.
+    """
+    # Use only org slug as namespace (ignore website_url for simplicity)
+    namespace = org_slug.lower()
+    namespace = re.sub(r'[^a-z0-9]+', '-', namespace)
     return namespace[:63]  # Pinecone namespace limit
 
 

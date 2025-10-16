@@ -68,6 +68,7 @@ done
 if [ ${#MISSING_VARS[@]} -ne 0 ]; then
     echo -e "${RED}⚠️  Warning: Missing environment variables: ${MISSING_VARS[*]}${NC}"
     echo "Please add them to your .env file before deploying."
+    echo "Note: JWT_SECRET can be any secure random string (e.g., openssl rand -hex 32)"
 fi
 
 # Load from .env file

@@ -10,11 +10,22 @@ import os
 API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-747d3d71730d.herokuapp.com")
 
 
+def get_auth_headers():
+    """Get authentication headers."""
+    if 'token' in st.session_state and st.session_state.token:
+        return {"Authorization": f"Bearer {st.session_state.token}"}
+    return {}
+
 
 def render_organizations_page():
     """Render the organization management page."""
     st.title("🏢 Organization Management")
     st.write("Manage organizations, websites, and trigger ingestion.")
+    
+    # Check if user is logged in
+    if 'user' not in st.session_state or not st.session_state.user:
+        st.warning("⚠️ Please login first from the main page")
+        return
     
     # Tabs for different functions
     tab1, tab2, tab3 = st.tabs(["Organizations", "Websites", "Ingestion Jobs"])
@@ -153,11 +164,6 @@ def render_jobs_tab():
     # Auto-refresh toggle
     auto_refresh = st.checkbox("Auto-refresh every 5 seconds", value=False)
     
-    if auto_refresh:
-        st.info("🔄 Auto-refresh enabled")
-        time.sleep(5)
-        st.rerun()
-    
     # Get all websites to map job to website
     websites = fetch_websites()
     website_map = {w['id']: w for w in websites}
@@ -177,9 +183,27 @@ def render_jobs_tab():
     if not all_jobs:
         st.info("No ingestion jobs found.")
     else:
+        has_active_jobs = False
         for job in all_jobs[:20]:  # Show latest 20
             website = website_map.get(job['website_id'])
             website_url = website['url'] if website else 'Unknown'
+            
+            # Fetch runtime status for running/pending jobs
+            status = job['status']
+            progress = job.get('progress_percent', 0)
+            pages = job.get('pages_crawled', 0)
+            chunks = job.get('chunks_created', 0)
+            error = job.get('error_message')
+            
+            if status in ['pending', 'running']:
+                has_active_jobs = True
+                runtime_status = fetch_job_runtime_status(job['id'])
+                if runtime_status:
+                    status = runtime_status.get('db_status', status)
+                    progress = runtime_status.get('progress_percent', progress)
+                    pages = runtime_status.get('pages_crawled', pages)
+                    chunks = runtime_status.get('chunks_created', chunks)
+                    error = runtime_status.get('error_message', error)
             
             with st.container():
                 col1, col2, col3 = st.columns([2, 1, 1])
@@ -189,7 +213,6 @@ def render_jobs_tab():
                     st.caption(f"Job ID: `{job['id'][:8]}...`")
                 
                 with col2:
-                    status = job['status']
                     status_icon = {
                         'pending': '⏳',
                         'running': '🔄',
@@ -198,27 +221,39 @@ def render_jobs_tab():
                     }.get(status, '❓')
                     st.write(f"{status_icon} **{status.upper()}**")
                     
-                    if job.get('progress_percent'):
-                        st.progress(job['progress_percent'] / 100)
-                        st.caption(f"{job['progress_percent']}%")
+                    if progress > 0:
+                        st.progress(progress / 100)
+                        st.caption(f"{progress}%")
                 
                 with col3:
-                    if job.get('pages_crawled'):
-                        st.metric("Pages", job['pages_crawled'])
-                    if job.get('chunks_created'):
-                        st.metric("Chunks", job['chunks_created'])
+                    if pages > 0:
+                        st.metric("Pages", pages)
+                    if chunks > 0:
+                        st.metric("Chunks", chunks)
                 
-                if job.get('error_message'):
-                    st.error(f"Error: {job['error_message']}")
+                if error:
+                    st.error(f"Error: {error}")
                 
                 st.write("---")
+        
+        # Auto-refresh after displaying all jobs
+        if auto_refresh and has_active_jobs:
+            st.info("🔄 Auto-refresh enabled - page will refresh in 5 seconds")
+            time.sleep(5)
+            st.rerun()
+        elif auto_refresh and not has_active_jobs:
+            st.success("✅ All jobs completed - auto-refresh disabled")
 
 
 # API helper functions
 def fetch_organizations() -> List[Dict[str, Any]]:
     """Fetch all organizations from API."""
     try:
-        response = requests.get(f"{API_BASE_URL}/organizations", timeout=10)
+        response = requests.get(
+            f"{API_BASE_URL}/organizations",
+            headers=get_auth_headers(),
+            timeout=10
+        )
         if response.status_code == 200:
             return response.json()
         else:
@@ -239,6 +274,7 @@ def create_organization(name: str, description: Optional[str] = None):
         response = requests.post(
             f"{API_BASE_URL}/organizations",
             json=payload,
+            headers=get_auth_headers(),
             timeout=10
         )
         
@@ -259,6 +295,7 @@ def fetch_websites(org_id: Optional[str] = None) -> List[Dict[str, Any]]:
         response = requests.get(
             f"{API_BASE_URL}/websites",
             params=params,
+            headers=get_auth_headers(),
             timeout=10
         )
         
@@ -283,6 +320,7 @@ def create_website(org_id: str, url: str):
         response = requests.post(
             f"{API_BASE_URL}/organizations/{org_id}/websites",
             json=payload,
+            headers=get_auth_headers(),
             timeout=10
         )
         
@@ -302,6 +340,7 @@ def start_ingestion(website_id: str, max_pages: int = 50):
         response = requests.post(
             f"{API_BASE_URL}/websites/{website_id}/ingest",
             params={"max_pages": max_pages},
+            headers=get_auth_headers(),
             timeout=10
         )
         
@@ -321,6 +360,7 @@ def fetch_jobs_for_website(website_id: str) -> List[Dict[str, Any]]:
     try:
         response = requests.get(
             f"{API_BASE_URL}/websites/{website_id}/jobs",
+            headers=get_auth_headers(),
             timeout=10
         )
         
@@ -330,6 +370,23 @@ def fetch_jobs_for_website(website_id: str) -> List[Dict[str, Any]]:
             return []
     except Exception:
         return []
+
+
+def fetch_job_runtime_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch real-time job status from job manager."""
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/jobs/{job_id}/status",
+            headers=get_auth_headers(),
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception:
+        return None
 
 
 if __name__ == "__main__":

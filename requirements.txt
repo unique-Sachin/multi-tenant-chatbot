@@ -24,3 +24,6 @@ cohere
 pyjwt
 bcrypt
 pydantic[email]
+PyPDF2
+python-docx
+python-multipart
