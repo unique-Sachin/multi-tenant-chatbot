@@ -12,7 +12,7 @@ The system now supports **multiple organizations**, each with isolated knowledge
 - 💬 **Namespace Isolation**: Each organization's data is completely separate
 - 📊 **Progress Tracking**: Real-time ingestion job monitoring
 
-**Quick Start Guide:** [docs/MULTI_TENANT_SETUP.md](docs/MULTI_TENANT_SETUP.md)
+**Multi-Tenant Setup:** Use `python setup_multi_tenant.py` to initialize the database schema for organizations and websites.
 
 ## Features
 
@@ -27,6 +27,12 @@ The system now supports **multiple organizations**, each with isolated knowledge
 - **Real-time Citations**: Clickable source links with each response
 - **Session Management**: Persistent chat history and user sessions
 - **Background Jobs**: Async ingestion with progress tracking
+- **Document Upload**: PDF, TXT, and DOCX file upload and processing
+- **User Authentication**: JWT-based user registration and login
+- **Conversation History**: Persistent chat sessions with history
+- **Hybrid Search**: Vector + BM25 keyword search with RRF fusion
+- **Performance Caching**: Redis-based caching for improved response times
+- **RAGAS Evaluation**: Comprehensive evaluation framework with detailed metrics
 
 ## Architecture
 
@@ -53,41 +59,58 @@ zibtek-assgn/
 │   │   ├── jobs.py   # Background job manager
 │   │   └── ingestion_runner.py # Ingestion with progress tracking
 │   ├── ingest/       # Data collection and processing
-│   │   └── ingest.py # Website crawling and vectorization (multi-tenant)
+│   │   ├── ingest.py # Website crawling and vectorization (multi-tenant)
+│   │   └── document_ingest.py # Document upload processing
 │   ├── retrieval/    # Search and retrieval systems
 │   │   ├── retriever.py # Pinecone + LangChain integration
 │   │   ├── hybrid.py    # Hybrid search (vector + BM25)
+│   │   ├── hybrid_manager.py # Multi-tenant hybrid retrieval
 │   │   └── rerank.py    # Cohere reranking
 │   ├── guards/       # Security and scope validation
 │   │   └── guards.py # Multi-layer safety system
 │   ├── storage/      # Database and vector store interfaces
 │   │   ├── db.py     # Supabase database operations
 │   │   ├── pine.py   # Pinecone vector storage (namespace support)
-│   │   └── organizations.py # Organization/website CRUD
+│   │   ├── organizations.py # Organization/website CRUD
+│   │   ├── auth.py   # User authentication
+│   │   ├── conversations.py # Chat history management
+│   │   └── documents.py # Document management
 │   ├── ui/           # Streamlit frontend
 │   │   ├── app.py    # Main chat interface with namespace selector
 │   │   └── pages/
-│   │       └── organizations.py # Organization management UI
+│   │       ├── organizations.py # Organization management UI
+│   │       └── documents.py # Document upload UI
 │   ├── eval/         # Evaluation and testing
+│   │   └── eval.py   # Evaluation utilities
 │   └── utils/        # Shared utilities
+│       ├── db_init.py # Database initialization
+│       ├── cache.py  # Redis caching
+│       └── retries.py # Retry logic
+├── evaluation/       # RAGAS evaluation framework
+│   ├── README.md     # Evaluation documentation
+│   ├── ragas_evaluator.py # RAGAS evaluation system
+│   ├── ragas_analysis.py  # Analysis utilities
+│   ├── run_ragas.py      # Run evaluations
+│   └── test_cases.json   # Test cases for evaluation
 ├── infra/
 │   ├── docker/       # Docker configurations
+│   │   ├── docker-compose.yml # Multi-service setup
+│   │   └── Dockerfile        # Container definition
 │   └── sql/          # Database schemas
 │       ├── 001_init.sql         # Initial chat_logs table
 │       └── 002_multi_tenant.sql # Multi-tenant tables
 ├── docs/
-│   ├── ARCHITECTURE.md         # System architecture
-│   └── MULTI_TENANT_SETUP.md  # Multi-tenant setup guide
-├── infra/
-│   ├── docker/       # Docker configurations
-│   └── sql/          # Database schemas
-├── run_ingestion.py  # Execute data ingestion
-├── run_demo.py       # Run complete system (FastAPI + Streamlit)
-├── demo_server.py    # Demo the full pipeline
-├── test_*.py         # Comprehensive test suite
-├── pyproject.toml    # Project configuration
-├── requirements.txt  # Dependencies
-└── .env              # Environment variables
+│   └── ARCHITECTURE.md         # System architecture
+├── setup_multi_tenant.py # Multi-tenant database setup
+├── deploy-heroku.sh      # Heroku deployment script
+├── setup-docker.sh       # Docker setup script
+├── pyproject.toml        # Project configuration
+├── requirements.txt      # Core dependencies
+├── requirements-heroku.txt # Heroku-specific dependencies
+├── requirements-dev.txt  # Development dependencies
+├── runtime.txt           # Python version for Heroku
+├── Procfile             # Heroku process definition
+└── .env                 # Environment variables
 ```
 
 ## Quick Start
@@ -126,34 +149,15 @@ uv sync
 python src/utils/db_init.py
 ```
 
-### 4. Test Ingestion Components
+### 4. Setup Multi-Tenant Schema
 
 ```bash
-python test_ingestion.py
+python setup_multi_tenant.py
 ```
 
-### 5. Run Data Ingestion
+This will guide you through setting up the multi-tenant database schema in Supabase.
 
-```bash
-python run_ingestion.py
-```
-
-This will:
-- Crawl the Zibtek website
-- Extract and clean text content
-- Create chunks with overlapping content
-- Generate embeddings using OpenAI
-- Store everything in Pinecone for retrieval
-
-### 6. Run the Complete Chat System
-
-#### Option A: Run Both Services Together
-```bash
-python run_demo.py
-```
-This starts both the FastAPI backend and Streamlit UI automatically.
-
-#### Option B: Run Services Separately
+### 5. Run the Complete Chat System
 
 **Start the API server:**
 ```bash
@@ -172,8 +176,9 @@ streamlit run src/ui/app.py --server.port 8501 --server.address 0.0.0.0
 - **API Health**: http://localhost:8000/health
 
 **Authentication:** 
-- Default access code: `zibtek-demo-2024`
-- Configure via `STREAMLIT_AUTH_SHARED_SECRET` in `.env`
+- Sign up with email/password on the Streamlit UI
+- JWT-based authentication with refresh tokens
+- User sessions persist across browser restarts
 
 ## 🐳 Docker Deployment (One Command)
 
@@ -255,6 +260,55 @@ The Docker setup automatically:
 - **Redis**: localhost:6379
 - **PostgreSQL**: localhost:5432 (user: zibtek, db: zibtek)
 
+## 🚀 Heroku Deployment
+
+For production deployment to Heroku:
+
+### Prerequisites
+- Heroku CLI installed
+- Heroku account
+- External Supabase and Pinecone accounts (Heroku doesn't include these)
+
+### Quick Deploy
+```bash
+# Make script executable and run
+chmod +x deploy-heroku.sh
+./deploy-heroku.sh
+```
+
+The script will:
+1. Create or use existing Heroku app
+2. Add Redis addon
+3. Set environment variables from `.env`
+4. Deploy the API server
+5. Provide health check and management commands
+
+### Manual Deployment
+```bash
+# Login to Heroku
+heroku login
+
+# Create app
+heroku create your-app-name
+
+# Add Redis
+heroku addons:create heroku-redis:mini
+
+# Set environment variables
+heroku config:set OPENAI_API_KEY=your_key
+heroku config:set PINECONE_API_KEY=your_key
+# ... (set all required variables)
+
+# Deploy
+git push heroku main
+```
+
+### Production Notes
+- Only the API is deployed to Heroku (not Streamlit UI)
+- Use external Supabase for database
+- Configure CORS for your frontend domain
+- Monitor with `heroku logs --tail`
+
 ### 7. Features Overview
 
 **Streamlit UI Features:**
@@ -310,6 +364,66 @@ python test_retrieval.py
 ```
 
 This will test the retrieval system with the query "What services does Zibtek offer?" and display results.
+
+## Retrieval System
+
+## Document Upload & Processing
+
+The system supports uploading and processing various document formats:
+
+### Supported Formats
+- **PDF**: Portable Document Format files
+- **TXT**: Plain text files
+- **DOCX**: Microsoft Word documents
+
+### Upload Process
+1. **Authentication**: User must be logged in
+2. **Organization Selection**: Choose target organization
+3. **File Upload**: Drag & drop or browse for files
+4. **Processing**: Automatic text extraction and chunking
+5. **Vectorization**: Generate embeddings for search
+6. **Storage**: Save to organization's namespace in Pinecone
+
+### Access Document Upload
+- Navigate to 📄 **Documents** page in the Streamlit UI
+- Select your organization
+- Upload files up to 10MB
+- Monitor processing progress
+
+## User Authentication & Sessions
+
+The system includes a complete authentication system:
+
+### Features
+- **User Registration**: Email/password signup
+- **Secure Login**: JWT-based authentication
+- **Session Persistence**: Login state maintained across browser sessions
+- **Conversation History**: Chat history tied to user accounts
+- **Organization Access**: Users can access multiple organizations
+
+### Usage
+1. Visit the Streamlit UI
+2. Sign up with email and password
+3. Login to access the chat interface
+4. Your conversations are automatically saved
+
+## Evaluation Framework
+
+A comprehensive RAGAS-based evaluation system is included:
+
+### Features
+- **Multiple Metrics**: Faithfulness, Answer Relevancy, Context Precision, Context Recall
+- **Test Cases**: Predefined test questions and expected responses
+- **Automated Reports**: HTML reports with detailed analysis
+- **Continuous Monitoring**: Regular evaluation of system performance
+
+### Usage
+```bash
+cd evaluation
+python run_ragas.py
+```
+
+See `evaluation/README.md` for detailed documentation.
 
 ## Retrieval System
 
@@ -413,15 +527,23 @@ prompt = system_prompt()                                        # Returns comple
 
 ### Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `SUPABASE_URL` | Supabase project URL | Yes |
-| `SUPABASE_ANON_KEY` | Supabase anonymous key | Yes |
-| `PINECONE_API_KEY` | Pinecone API key | Yes |
-| `OPENAI_API_KEY` | OpenAI API key | Yes |
-| `DATASET_DOMAIN` | Website to crawl | Yes |
-| `MIN_SCOPE_SIM` | Minimum similarity threshold for scope validation | No (default: 0.4) |
-| `OUT_OF_SCOPE_MESSAGE` | Custom message for blocked questions | No (has default) |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|----------|
+| `SUPABASE_URL` | Supabase project URL | Yes | - |
+| `SUPABASE_ANON_KEY` | Supabase anonymous key | Yes | - |
+| `PINECONE_API_KEY` | Pinecone API key | Yes | - |
+| `OPENAI_API_KEY` | OpenAI API key | Yes | - |
+| `COHERE_API_KEY` | Cohere API key for reranking | No | - |
+| `REDIS_URL` | Redis connection URL | No | redis://localhost:6379 |
+| `DATASET_DOMAIN` | Website to crawl | No | https://www.zibtek.com |
+| `MIN_SCOPE_SIM` | Minimum similarity threshold for scope validation | No | 0.4 |
+| `OUT_OF_SCOPE_MESSAGE` | Custom message for blocked questions | No | (default message) |
+| `JWT_SECRET` | JWT token signing secret | Yes | (auto-generated) |
+| `API_BASE_URL` | API base URL for Streamlit | No | http://localhost:8000 |
+| `HYBRID_ENABLED` | Enable hybrid search (vector + BM25) | No | true |
+| `RERANK_ENABLED` | Enable Cohere reranking | No | true |
+| `CACHE_ENABLED` | Enable Redis caching | No | false |
+| `RATELIMIT_ENABLED` | Enable API rate limiting | No | true |
 
 ### Ingestion Settings
 
@@ -528,11 +650,18 @@ mypy src/
 
 ## Technologies Used
 
-- **Web Scraping**: Trafilatura
-- **Embeddings**: OpenAI, Sentence Transformers
-- **Vector Store**: Pinecone
-- **Backend**: FastAPI
-- **Frontend**: Streamlit
-- **Database**: PostgreSQL (Supabase)
-- **Caching**: Redis
-- **Security**: Custom guardrails and validation
+- **Backend**: FastAPI with async support
+- **Frontend**: Streamlit with multi-page interface
+- **Vector Store**: Pinecone with namespace isolation
+- **Database**: PostgreSQL (Supabase) for logging and user management
+- **Authentication**: JWT tokens with bcrypt password hashing
+- **Caching**: Redis for performance optimization
+- **Embeddings**: OpenAI text-embedding-3-small
+- **LLM**: OpenAI GPT-4o-mini for response generation
+- **Reranking**: Cohere for result reranking
+- **Web Scraping**: Trafilatura with BeautifulSoup fallback
+- **Search**: Hybrid search (Vector + BM25) with RRF fusion
+- **Document Processing**: PyPDF2, python-docx for file processing
+- **Evaluation**: RAGAS framework for comprehensive metrics
+- **Security**: Multi-layer guardrails and prompt injection protection
+- **Deployment**: Docker Compose, Heroku-ready configuration
