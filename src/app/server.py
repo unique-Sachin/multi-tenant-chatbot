@@ -652,12 +652,22 @@ Please answer the question using ONLY the information provided in the CONTEXT ab
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
+async def chat_stream(request: ChatStreamRequest, http_request: Request) -> StreamingResponse:
     """Streaming chat endpoint that yields response tokens as they're generated."""
     
     async def generate_stream():
         start_time = time.time()
         session_id = request.session_id or str(uuid.uuid4())
+        
+        # Authenticate user
+        try:
+            user = await get_current_user(http_request)
+        except HTTPException:
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Authentication required'})}\n\n"
+            return
+        
+        # Get user IP for logging
+        user_ip = http_request.client.host if http_request.client else "unknown"
         
         try:
             # Initial metadata
@@ -674,20 +684,34 @@ async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
             if is_oos:
                 warning_response = guards.get_out_of_scope_message()
                 
-                # Log the interaction
-                log_entry = ChatLogCreate(
+                # Log the out-of-scope interaction with full details
+                processing_time = int((time.time() - start_time) * 1000)
+                
+                # Create conversation session
+                create_or_update_session(user.id, session_id, namespace)
+                
+                # Create comprehensive chat log entry for out-of-scope
+                chat_log = ChatLogCreate(
                     session_id=session_id,
+                    user_id=user.id,
+                    namespace=namespace,
                     user_query=request.question,
                     answer=warning_response,
+                    is_oos=True,
+                    latency_ms=processing_time,
+                    cost_cents=0,
                     citations=[],
-                    latency_ms=int((time.time() - start_time) * 1000),
-                    is_oos=True
+                    model="gpt-4o-mini",
+                    retrieved_urls=[],
+                    rerank_scores={},
+                    retrieval_steps={}
                 )
                 
                 try:
-                    create_chat_log(log_entry)
+                    create_chat_log(chat_log)
+                    print(f"✅ Logged out-of-scope streaming interaction for user {user.id}: {session_id}")
                 except Exception as e:
-                    print(f"Warning: Could not log chat interaction: {e}")
+                    print(f"❌ Failed to log out-of-scope streaming interaction: {e}")
                 
                 # Stream the warning response
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Content filtered'})}\n\n"
@@ -704,11 +728,97 @@ async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
             # Retrieval
             yield f"data: {json.dumps({'type': 'status', 'message': 'Searching knowledge base...'})}\n\n"
             
-            # Get documents (use namespace for multi-tenant isolation)
-            docs = retriever.retrieve_with_scores(request.question, k=20, namespace=namespace)
+            # Initialize retrieval steps tracking
+            retrieval_steps = {
+                "vector_search": {},
+                "bm25_search": {},
+                "rrf_fusion": {},
+                "reranking": {},
+                "method": ""
+            }
+            
+            # Check if hybrid retrieval is enabled
+            hybrid_enabled = os.getenv('HYBRID_ENABLED', 'false').lower() == 'true'
+            
+            if hybrid_enabled and hybrid_manager:
+                print(f"🔀 Using hybrid retrieval (vector + BM25) for namespace: '{namespace}'...")
+                # Get namespace-specific hybrid retriever
+                namespace_retriever = hybrid_manager.get_retriever(namespace)
+                hybrid_result = namespace_retriever.hybrid_search(request.question, k=20, namespace=namespace)
+                docs = hybrid_result.documents
+                hybrid_scores = hybrid_result.fusion_scores
+                retrieval_method = hybrid_result.method
+                
+                # Capture detailed step information
+                retrieval_steps["vector_search"] = {
+                    "count": len(hybrid_result.vector_scores),
+                    "scores": dict(list(hybrid_result.vector_scores.items())[:5])  # Top 5 for display
+                }
+                retrieval_steps["bm25_search"] = {
+                    "count": len(hybrid_result.bm25_scores),
+                    "scores": dict(list(hybrid_result.bm25_scores.items())[:5])  # Top 5 for display
+                }
+                retrieval_steps["rrf_fusion"] = {
+                    "count": len(hybrid_result.fusion_scores),
+                    "scores": dict(list(hybrid_result.fusion_scores.items())[:5])  # Top 5 for display
+                }
+                retrieval_steps["method"] = retrieval_method
+                
+                print(f"✅ Hybrid retrieval complete: {len(docs)} documents from namespace '{namespace}' via {retrieval_method}")
+            else:
+                print(f"🔍 Using vector-only retrieval for namespace: '{namespace}'")
+                docs = retriever.retrieve_with_scores(request.question, k=20, namespace=namespace)
+                
+                # Capture vector-only step information
+                retrieval_steps["vector_search"] = {
+                    "count": len(docs),
+                    "scores": {str(i): score for i, (doc, score) in enumerate(docs[:5])}  # Top 5 for display
+                }
+                retrieval_steps["method"] = "vector_only"
+                
+                # Convert from (doc, score) tuples to just docs for consistency
+                docs = [doc for doc, score in docs]
             
             # Filter high-confidence docs and limit to top 4
-            filtered_docs = [doc for doc, score in docs if score > 0.7][:4]
+            filtered_docs = docs[:4]  # Take top 4 instead of filtering by score
+            
+            # Step 3: Rerank documents for better precision (optional)
+            rerank_scores = {}
+            if RERANK_ENABLED and len(docs) > 4:
+                try:
+                    print(f"🎯 Reranking {len(docs)} documents with Cohere...")
+                    filtered_docs, rerank_scores = rerank_with_scores(request.question, docs, top_n=4)
+                    print(f"✅ Reranked to top {len(filtered_docs)} documents")
+                    
+                    # Capture reranking step information
+                    retrieval_steps["reranking"] = {
+                        "enabled": True,
+                        "input_count": len(docs),
+                        "output_count": len(filtered_docs),
+                        "scores": dict(list(rerank_scores.items())[:5])  # Top 5 for display
+                    }
+                except Exception as e:
+                    print(f"⚠️  Reranking failed, using original order: {e}")
+                    filtered_docs = docs[:4]
+                    rerank_scores = {}
+                    retrieval_steps["reranking"] = {
+                        "enabled": True,
+                        "error": str(e),
+                        "input_count": len(docs),
+                        "output_count": len(filtered_docs)
+                    }
+            else:
+                filtered_docs = docs[:4]
+                if not RERANK_ENABLED:
+                    print("🔄 Reranking disabled via RERANK_ENABLED=false")
+                    retrieval_steps["reranking"] = {"enabled": False, "reason": "disabled"}
+                else:
+                    print(f"📄 Only {len(docs)} documents, skipping rerank")
+                    retrieval_steps["reranking"] = {
+                        "enabled": False,
+                        "reason": f"insufficient_docs",
+                        "input_count": len(docs)
+                    }
             
             if not filtered_docs:
                 no_context_response = "I don't have specific information about that topic in my knowledge base. Could you please ask about Zibtek's software development services, technologies, or company information?"
@@ -727,7 +837,7 @@ async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
             
             # Prepare context and messages
             context = "\n\n".join([doc.page_content for doc in filtered_docs])
-            citations = list(set([doc.metadata.get("source", "") for doc in filtered_docs if doc.metadata.get("source")]))
+            citations = extract_citations(filtered_docs)  # Use the proper citation extraction function
             
             system_prompt = guards.system_prompt()
             user_prompt = f"Context:\n{context}\n\nQuestion: {request.question}"
@@ -746,24 +856,37 @@ async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
             # Sanitize and finalize
             sanitized_response = guards.sanitize(full_response)
             
-            # Log the interaction
+            # Log the interaction with full details
             processing_time = int((time.time() - start_time) * 1000)
-            log_entry = ChatLogCreate(
+            
+            # Create conversation session
+            create_or_update_session(user.id, session_id, namespace)
+            
+            # Create comprehensive chat log entry
+            chat_log = ChatLogCreate(
                 session_id=session_id,
+                user_id=user.id,
+                namespace=namespace,
                 user_query=request.question,
                 answer=sanitized_response,
-                retrieved_urls=citations,
+                is_oos=False,
                 latency_ms=processing_time,
-                is_oos=False
+                cost_cents=0,  # TODO: Calculate actual cost if needed
+                citations=[{"url": url} for url in citations],
+                model="gpt-4o-mini",
+                retrieved_urls=citations,
+                rerank_scores=rerank_scores,
+                retrieval_steps=retrieval_steps
             )
             
             try:
-                create_chat_log(log_entry)
+                create_chat_log(chat_log)
+                print(f"✅ Logged streaming chat interaction for user {user.id}: {session_id}")
             except Exception as e:
-                print(f"Warning: Could not log chat interaction: {e}")
+                print(f"❌ Failed to log streaming chat interaction: {e}")
             
             # Final completion message
-            yield f"data: {json.dumps({'type': 'complete', 'citations': citations, 'is_out_of_scope': False, 'processing_time_ms': processing_time})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'citations': citations, 'is_out_of_scope': False, 'processing_time_ms': processing_time, 'retrieval_steps': retrieval_steps})}\n\n"
             
         except Exception as e:
             error_msg = f"I apologize, but I encountered an error while processing your request: {str(e)}"

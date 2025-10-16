@@ -352,6 +352,7 @@ class HybridRetriever:
         logger.info(f"🔍 Performing hybrid search for: '{query[:50]}...' in namespace: '{search_namespace}'")
         
         # Get vector search results
+        vector_docs_lookup = {}  # Store documents by ID for later retrieval
         try:
             vector_docs = self.vector_store.similarity_search_with_score(
                 query=query,
@@ -362,9 +363,17 @@ class HybridRetriever:
             vector_scores = {}
             
             for doc, score in vector_docs:
-                doc_id = doc.metadata.get('id', f"vec_{len(vector_results)}")
+                # Use existing ID or generate a consistent one based on content hash
+                doc_id = doc.metadata.get('ID') or doc.metadata.get('id')
+                if not doc_id:
+                    # Generate a more reliable ID based on content hash
+                    import hashlib
+                    content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()[:12]
+                    doc_id = f"doc_{content_hash}"
+                
                 vector_results.append((doc_id, float(score)))
                 vector_scores[doc_id] = float(score)
+                vector_docs_lookup[doc_id] = doc  # Store for later retrieval
             
             logger.info(f"✅ Vector search: {len(vector_results)} results")
             
@@ -406,16 +415,24 @@ class HybridRetriever:
                 vector_results, bm25_results, rrf_k
             )
             fusion_scores = {doc_id: score for doc_id, score in fusion_results}
+            logger.info(f"📊 RRF fusion produced {len(fusion_results)} total fused results, taking top {k}")
         
         # Retrieve final documents
         final_docs = []
         final_fusion_scores = {}
+        failed_retrievals = 0
         
-        for doc_id, fusion_score in fusion_results[:k]:
-            # Try to get document from BM25 index first
-            doc = self.bm25.get_document_by_id(doc_id)
+        logger.info(f"📋 Attempting to retrieve {len(fusion_results[:k])} documents from fusion results")
+        
+        for i, (doc_id, fusion_score) in enumerate(fusion_results[:k]):
+            # Try to get document from vector lookup first (for generated IDs)
+            doc = vector_docs_lookup.get(doc_id)
             
-            # If not found, try vector store
+            # If not found, try BM25 index
+            if doc is None:
+                doc = self.bm25.get_document_by_id(doc_id)
+            
+            # If still not found, try vector store with metadata filter
             if doc is None:
                 try:
                     # Search by metadata id
@@ -427,14 +444,20 @@ class HybridRetriever:
                     )
                     if docs:
                         doc = docs[0]
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed vector store lookup for doc_id {doc_id}: {e}")
             
             if doc:
                 final_docs.append(doc)
                 final_fusion_scores[doc_id] = fusion_score
+            else:
+                failed_retrievals += 1
+                logger.warning(f"❌ Failed to retrieve document with ID: {doc_id}")
         
-        logger.info(f"🎯 Hybrid search complete: {len(final_docs)} documents, method: {method}")
+        if failed_retrievals > 0:
+            logger.warning(f"⚠️  Failed to retrieve {failed_retrievals} out of {len(fusion_results[:k])} documents")
+        
+        logger.info(f"🎯 Hybrid search complete: {len(final_docs)} documents retrieved, method: {method}")
         
         return HybridResult(
             documents=final_docs,

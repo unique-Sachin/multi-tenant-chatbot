@@ -190,8 +190,97 @@ def fetch_websites():
         st.session_state.websites = result
 
 
+def send_message_stream(question: str, namespace: str) -> Optional[Dict]:
+    """Send message to streaming chat API and return final response."""
+    headers = {}
+    if st.session_state.token:
+        headers["Authorization"] = f"Bearer {st.session_state.token}"
+    
+    data = {
+        "question": question,
+        "session_id": st.session_state.current_session_id,
+        "namespace": namespace
+    }
+    
+    url = f"{API_BASE_URL}/chat/stream"
+    
+    try:
+        with requests.post(url, json=data, headers=headers, stream=True, timeout=60) as response:
+            if response.status_code == 401:
+                # Token expired or invalid
+                st.session_state.user = None
+                st.session_state.token = None
+                st.error("Session expired. Please log in again.")
+                st.rerun()
+                return None
+            
+            if response.status_code != 200:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+            
+            # Create a placeholder for streaming response
+            response_placeholder = st.empty()
+            current_response = ""
+            citations = []
+            is_out_of_scope = False
+            processing_time = 0
+            retrieval_steps = {}
+            
+            # Process streaming response
+            for line in response.iter_lines():
+                if line:
+                    line_text = line.decode('utf-8')
+                    if line_text.startswith('data: '):
+                        try:
+                            data_json = json.loads(line_text[6:])  # Remove 'data: ' prefix
+                            
+                            if data_json.get('type') == 'token':
+                                current_response = data_json.get('content', '')
+                                # Update the placeholder with current response
+                                response_placeholder.markdown(f"🤖 **Assistant:** {current_response}")
+                            
+                            elif data_json.get('type') == 'complete':
+                                citations = data_json.get('citations', [])
+                                is_out_of_scope = data_json.get('is_out_of_scope', False)
+                                processing_time = data_json.get('processing_time_ms', 0)
+                                retrieval_steps = data_json.get('retrieval_steps', {})
+                                
+                                # Clear placeholder and return final response
+                                response_placeholder.empty()
+                                return {
+                                    'answer': current_response,
+                                    'citations': citations,
+                                    'is_out_of_scope': is_out_of_scope,
+                                    'processing_time_ms': processing_time,
+                                    'retrieval_steps': retrieval_steps
+                                }
+                            
+                            elif data_json.get('type') == 'error':
+                                error_msg = data_json.get('content', 'Unknown error')
+                                st.error(f"Error: {error_msg}")
+                                response_placeholder.empty()
+                                return None
+                                
+                        except json.JSONDecodeError:
+                            continue
+            
+            # If we get here, return whatever we have
+            response_placeholder.empty()
+            return {
+                'answer': current_response or "Sorry, I couldn't generate a response.",
+                'citations': citations,
+                'is_out_of_scope': is_out_of_scope,
+                'processing_time_ms': processing_time,
+                'retrieval_steps': retrieval_steps
+            }
+            
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return None
+
+
 def send_message(question: str, namespace: str) -> Optional[Dict]:
-    """Send message to chat API."""
+    """Send message to chat API (fallback to non-streaming)."""
     data = {
         "question": question,
         "session_id": st.session_state.current_session_id,
@@ -367,10 +456,13 @@ def render_message(message: Dict[str, Any], is_user: bool = False):
         with st.chat_message("assistant"):
             st.write(message["content"])
             
-            if message.get("retrieval_steps"):
+            # Only show retrieval steps and citations if the message is not out of scope
+            is_out_of_scope = message.get("is_out_of_scope", False)
+            
+            if not is_out_of_scope and message.get("retrieval_steps"):
                 render_retrieval_steps(message["retrieval_steps"])
             
-            if message.get("citations"):
+            if not is_out_of_scope and message.get("citations"):
                 render_citations(message["citations"])
             
             col1, col2, col3 = st.columns(3)
@@ -519,9 +611,9 @@ def render_chat_page():
         with chat_container:
             render_message(user_message, True)
         
-        # Show "thinking" indicator
+        # Show "thinking" indicator and stream response
         with st.spinner("🤔 Thinking..."):
-            response = send_message(question, st.session_state.current_namespace)
+            response = send_message_stream(question, st.session_state.current_namespace)
         
         if response:
             # Add bot response to history

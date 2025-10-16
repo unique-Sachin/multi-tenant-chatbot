@@ -1,0 +1,15 @@
+# Development and evaluation dependencies
+-r requirements.txt
+
+# RAGAS evaluation framework
+ragas>=0.1.15
+datasets>=2.14.0
+
+# Development tools
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+jupyter>=1.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0

@@ -74,6 +74,14 @@ data/
 *.sqlite
 *.sqlite3
 
+# RAGAS evaluation reports and results
+evaluation/results/
+evaluation/*.html
+evaluation/*.json
+
+# Jupyter notebook checkpoints
+evaluation/.ipynb_checkpoints/
+
 # Temporary files
 tmp/
 temp/
