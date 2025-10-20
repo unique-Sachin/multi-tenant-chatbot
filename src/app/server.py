@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 import tiktoken
@@ -174,6 +175,15 @@ app = FastAPI(
     description="AI-powered chatbot for Zibtek software development services",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware to allow all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Add rate limiting if enabled
