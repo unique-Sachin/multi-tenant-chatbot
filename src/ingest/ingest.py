@@ -31,7 +31,7 @@ load_dotenv()
 class MilvusIngestor:
     """Milvus-based ingestion pipeline with hybrid search support (dense + BM25)."""
     
-    def __init__(self, domain: Optional[str] = None, partition_name: Optional[str] = None, max_pages: Optional[int] = None):
+    def __init__(self, domain: str, partition_name: Optional[str] = None, max_pages: Optional[int] = None):
         """Initialize Milvus ingestion pipeline.
         
         Args:
@@ -39,7 +39,7 @@ class MilvusIngestor:
             partition_name: Milvus partition name for multi-tenant isolation (e.g., "org_zibtek")
             max_pages: Maximum pages to crawl
         """
-        self.domain = domain or os.getenv("DATASET_DOMAIN", "https://www.zibtek.com")
+        self.domain = domain
         self.partition_name = partition_name or "_default"
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         

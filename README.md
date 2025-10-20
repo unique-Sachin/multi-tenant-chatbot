@@ -128,7 +128,6 @@ SUPABASE_URL=your_supabase_url_here
 SUPABASE_ANON_KEY=your_supabase_anon_key_here
 PINECONE_API_KEY=your_pinecone_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
-DATASET_DOMAIN=https://www.zibtek.com
 ```
 
 ### 2. Install Dependencies
@@ -543,7 +542,6 @@ prompt = system_prompt()                                        # Returns comple
 | `OPENAI_API_KEY` | OpenAI API key | Yes | - |
 | `COHERE_API_KEY` | Cohere API key for reranking | No | - |
 | `REDIS_URL` | Redis connection URL | No | redis://localhost:6379 |
-| `DATASET_DOMAIN` | Website to crawl | No | https://www.zibtek.com |
 | `MIN_SCOPE_SIM` | Minimum similarity threshold for scope validation | No | 0.4 |
 | `OUT_OF_SCOPE_MESSAGE` | Custom message for blocked questions | No | (default message) |
 | `JWT_SECRET` | JWT token signing secret | Yes | (auto-generated) |
