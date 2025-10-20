@@ -20,6 +20,7 @@ pydantic
 numpy
 scipy
 tiktoken
+tokenizers
 cohere
 pyjwt
 bcrypt

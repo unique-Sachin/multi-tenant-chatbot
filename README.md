@@ -548,7 +548,6 @@ prompt = system_prompt()                                        # Returns comple
 | `OUT_OF_SCOPE_MESSAGE` | Custom message for blocked questions | No | (default message) |
 | `JWT_SECRET` | JWT token signing secret | Yes | (auto-generated) |
 | `API_BASE_URL` | API base URL for Streamlit | No | http://localhost:8000 |
-| `HYBRID_ENABLED` | Enable hybrid search (vector + BM25) | No | true |
 | `RERANK_ENABLED` | Enable Cohere reranking | No | true |
 | `CACHE_ENABLED` | Enable Redis caching | No | false |
 | `RATELIMIT_ENABLED` | Enable API rate limiting | No | true |

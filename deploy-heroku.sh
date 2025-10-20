@@ -56,7 +56,7 @@ echo -e "${BLUE}🔧 Configuring environment variables...${NC}"
 
 # Check for required variables
 echo "Checking for required environment variables..."
-REQUIRED_VARS=("OPENAI_API_KEY" "PINECONE_API_KEY" "SUPABASE_URL" "SUPABASE_ANON_KEY" "COHERE_API_KEY" "JWT_SECRET")
+REQUIRED_VARS=("OPENAI_API_KEY" "MILVUS_URI" "MILVUS_TOKEN" "SUPABASE_URL" "SUPABASE_ANON_KEY" "COHERE_API_KEY" "JWT_SECRET")
 MISSING_VARS=()
 
 for var in "${REQUIRED_VARS[@]}"; do
