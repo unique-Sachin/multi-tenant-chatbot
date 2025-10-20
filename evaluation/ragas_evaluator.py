@@ -75,7 +75,7 @@ class RAGASEvaluator:
             }
             
             response = requests.post(
-                f"{self.api_base_url}/chat",
+                f"{self.api_base_url}/chat/stream",
                 json=payload,
                 headers=self._get_auth_headers(),
                 timeout=120

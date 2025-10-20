@@ -1,9 +1,9 @@
-"""Document ingestion for PDF, TXT, DOCX files."""
+"""Document ingestion for PDF, TXT, DOCX files with Milvus storage."""
 
 import os
 import hashlib
 from datetime import datetime
-from typing import List, Dict, Any, Optional, BinaryIO
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 import tempfile
 
@@ -25,7 +25,7 @@ except ImportError:
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.storage.pine import init_index, upsert_chunks
+from src.storage.milvus import MilvusStorage
 from src.storage.documents import (
     create_document_record, 
     update_document_success, 
@@ -36,7 +36,7 @@ load_dotenv()
 
 
 class DocumentIngestor:
-    """Document ingestion pipeline for PDF, TXT, DOCX files."""
+    """Document ingestion pipeline for PDF, TXT, DOCX files with Milvus storage."""
     
     SUPPORTED_FORMATS = {
         '.pdf': 'PDF Document',
@@ -45,13 +45,13 @@ class DocumentIngestor:
         '.doc': 'Word Document (Legacy)',
     }
     
-    def __init__(self, namespace: str = "zibtek"):
+    def __init__(self, partition_name: str = "_default"):
         """Initialize document ingestor.
         
         Args:
-            namespace: Pinecone namespace for this organization
+            partition_name: Milvus partition name for this organization
         """
-        self.namespace = namespace
+        self.partition_name = partition_name
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         
         if not self.openai_api_key:
@@ -62,16 +62,21 @@ class DocumentIngestor:
         self.chunk_size = 512
         self.chunk_overlap = 50
         
-        # Initialize Pinecone
-        self.index = init_index()
+        # Initialize Milvus
+        self.milvus_storage = MilvusStorage()
+        self.milvus_storage.init_collection()
         
-        print(f"📄 Initialized DocumentIngestor for namespace: {self.namespace}")
+        # Create partition
+        self.milvus_storage.create_partition(self.partition_name)
+        
+        print(f"📄 Initialized DocumentIngestor for partition: {self.partition_name}")
     
     def extract_text_from_pdf(self, file_content: bytes, filename: str) -> str:
         """Extract text from PDF file."""
         if not PyPDF2:
             raise ImportError("PyPDF2 is required for PDF processing. Install with: pip install PyPDF2")
         
+        tmp_path = None
         try:
             # Write to temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -101,15 +106,15 @@ class DocumentIngestor:
             
         except Exception as e:
             print(f"  ❌ Error extracting PDF text: {e}")
-            if 'tmp_path' in locals():
+            if tmp_path is not None:
                 os.unlink(tmp_path)
             raise
-    
     def extract_text_from_docx(self, file_content: bytes, filename: str) -> str:
         """Extract text from DOCX file."""
         if not DocxDocument:
             raise ImportError("python-docx is required for DOCX processing. Install with: pip install python-docx")
         
+        tmp_path = None
         try:
             # Write to temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
@@ -131,8 +136,9 @@ class DocumentIngestor:
             
         except Exception as e:
             print(f"  ❌ Error extracting DOCX text: {e}")
-            if 'tmp_path' in locals():
+            if tmp_path is not None:
                 os.unlink(tmp_path)
+            raise
             raise
     
     def extract_text_from_txt(self, file_content: bytes, filename: str) -> str:
@@ -215,7 +221,7 @@ class DocumentIngestor:
         """
         start_time = datetime.now()
         print(f"\n📄 Ingesting document: {filename}")
-        print(f"🏢 Namespace: {self.namespace}")
+        print(f"🏢 Partition: {self.partition_name}")
         
         # Generate document ID early for tracking
         doc_id = hashlib.sha256(file_content).hexdigest()[:16]
@@ -236,7 +242,7 @@ class DocumentIngestor:
                     file_type=self.SUPPORTED_FORMATS[file_ext],
                     file_size_bytes=file_size,
                     doc_id=doc_id,
-                    namespace=self.namespace,
+                    namespace=self.partition_name,
                     metadata=metadata
                 )
                 print(f"  📝 Created database record: {db_record_id}")
@@ -261,14 +267,14 @@ class DocumentIngestor:
             chunk_texts = [chunk['text'] for chunk in chunks]
             embeddings = self.generate_embeddings(chunk_texts)
             
-            # Prepare vectors for Pinecone
-            vectors = []
+            # Prepare documents for Milvus
+            documents = []
             base_metadata = {
                 'source_type': 'document',
                 'filename': filename,
                 'file_type': self.SUPPORTED_FORMATS[file_ext],
                 'doc_id': doc_id,
-                'namespace': self.namespace,
+                'partition_name': self.partition_name,
                 'ingested_at': datetime.now().isoformat(),
                 'char_count': len(text_content),
             }
@@ -282,46 +288,39 @@ class DocumentIngestor:
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 vector_id = f"{doc_id}_chunk_{i}"
                 
-                # Format metadata to match expected structure
-                chunk_metadata = {
-                    'url': f"document://{filename}",  # Use document:// protocol for docs
+                # Prepare document for Milvus
+                doc = {
+                    'id': vector_id,
+                    'text': chunk['text'],
+                    'dense_vector': embedding,
+                    # sparse_vector will be auto-generated by BM25 function
+                    # Additional metadata fields
+                    'url': f"document://{filename}",
                     'title': filename,
-                    'section': f'Chunk {i+1}',
-                    'crawl_ts': datetime.now().isoformat(),
-                    'site': 'document',
-                    'namespace': self.namespace,
                     'chunk_index': i,
-                    'source_type': 'document',
-                    'file_type': self.SUPPORTED_FORMATS[file_ext],
-                    'doc_id': doc_id,
+                    'source_hash': doc_id,
                 }
                 
-                # Add org_id if provided
-                if org_id:
-                    chunk_metadata['org_id'] = org_id
-                
                 # Add custom metadata
-                if metadata:
-                    chunk_metadata.update(metadata)
+                if org_id:
+                    doc['org_id'] = org_id
                 
-                vectors.append({
-                    'id': vector_id,
-                    'embedding': embedding,  # Changed from 'values' to 'embedding'
-                    'text': chunk['text'],
-                    'metadata': chunk_metadata
-                })
+                documents.append(doc)
             
-            # Upsert to Pinecone
-            print(f"  ☁️  Uploading {len(vectors)} vectors to Pinecone namespace '{self.namespace}'...")
-            print(f"     Sample vector ID: {vectors[0]['id'] if vectors else 'N/A'}")
-            print(f"     Embedding dimension: {len(vectors[0]['embedding']) if vectors and vectors[0].get('embedding') else 'N/A'}")
+            # Insert to Milvus
+            print(f"  ☁️  Uploading {len(documents)} documents to Milvus partition '{self.partition_name}'...")
+            print(f"     Sample document ID: {documents[0]['id'] if documents else 'N/A'}")
+            print(f"     Embedding dimension: {len(documents[0]['dense_vector']) if documents and documents[0].get('dense_vector') else 'N/A'}")
             
-            success = upsert_chunks(vectors, batch_size=100, namespace=self.namespace)
+            success = self.milvus_storage.insert_documents(
+                documents=documents,
+                partition_name=self.partition_name
+            )
             
             if not success:
-                raise Exception("Failed to upsert vectors to Pinecone")
+                raise Exception("Failed to insert documents to Milvus")
             
-            print(f"  ✅ Successfully uploaded vectors to Pinecone")
+            print(f"  ✅ Successfully uploaded documents to Milvus")
             
             # Update document record to completed
             if org_id and user_id:
@@ -339,14 +338,14 @@ class DocumentIngestor:
                 'doc_id': doc_id,
                 'chunks': len(chunks),
                 'characters': len(text_content),
-                'namespace': self.namespace,
+                'partition_name': self.partition_name,
                 'elapsed_seconds': round(elapsed, 2),
-                'vectors_uploaded': len(vectors)
+                'documents_uploaded': len(documents)
             }
             
             print(f"  ✅ Successfully ingested {filename}")
             print(f"  ⏱️  Completed in {elapsed:.2f}s")
-            print(f"  📊 Stats: {len(chunks)} chunks, {len(text_content)} chars, {len(vectors)} vectors")
+            print(f"  📊 Stats: {len(chunks)} chunks, {len(text_content)} chars, {len(documents)} documents")
             
             return result
             
@@ -364,7 +363,7 @@ class DocumentIngestor:
                 'success': False,
                 'filename': filename,
                 'error': error_msg,
-                'namespace': self.namespace,
+                'partition_name': self.partition_name,
                 'traceback': traceback.format_exc()
             }
     

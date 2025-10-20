@@ -1,4 +1,7 @@
-"""Guardrails system for Zibtek chatbot - multi-layer safety before LLM."""
+"""Guardrails system for Zibtek chatbot - multi-layer safety before LLM.
+
+Milvus-based implementation for semantic scope checking with multi-tenant support.
+"""
 
 import os
 import re
@@ -6,12 +9,10 @@ import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
-import hashlib
-import json
 from datetime import datetime, timedelta
 
 from openai import OpenAI
-from pinecone import Pinecone
+from pymilvus import MilvusClient
 
 load_dotenv()
 
@@ -21,25 +22,33 @@ logger = logging.getLogger(__name__)
 
 
 class ZibtekGuards:
-    """Multi-layer safety system for Zibtek chatbot."""
+    """Multi-layer safety system for Zibtek chatbot with Milvus integration."""
     
     def __init__(self):
         """Initialize guardrails with API clients and configuration."""
         # Get environment variables
-        self.pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        self.milvus_uri = os.getenv("MILVUS_URI")
+        self.milvus_token = os.getenv("MILVUS_TOKEN")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.min_scope_sim = float(os.getenv("MIN_SCOPE_SIM", "0.5"))
+        self.collection_name = os.getenv("MILVUS_COLLECTION", "documents")
         
-        if not self.pinecone_api_key or not self.openai_api_key:
-            raise ValueError("PINECONE_API_KEY and OPENAI_API_KEY are required")
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required")
         
-        # Initialize clients
+        # Initialize OpenAI client
         self.openai_client = OpenAI(api_key=self.openai_api_key)
-        self.pc = Pinecone(api_key=self.pinecone_api_key)
-        self.index_name = "zibtek-chatbot-index"
-        self.namespace = "zibtek"  # Default namespace
         
-        # Cache for corpus centroids (per namespace)
+        # Initialize Milvus client (optional for semantic checking)
+        self.milvus_client = None
+        if self.milvus_uri and self.milvus_token:
+            try:
+                self.milvus_client = MilvusClient(uri=self.milvus_uri, token=self.milvus_token)
+                logger.info("✅ Milvus client initialized for semantic scope checking")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not initialize Milvus client: {e}. Semantic checking disabled.")
+        
+        # Cache for corpus centroids (per partition)
         self._centroid_cache = {}
         self._cache_duration = timedelta(hours=24)  # Cache for 24 hours
         
@@ -51,17 +60,17 @@ class ZibtekGuards:
             "found on their website."
         )
         
-        print("✅ Zibtek Guards initialized (v2.0 - Multi-tenant with <10 vector skip)")
+        print("✅ Zibtek Guards initialized (v3.0 - Milvus with multi-tenant support)")
         print(f"   - Minimum scope similarity: {self.min_scope_sim}")
-        print(f"   - Out of scope message configured")
-        print(f"   - Centroid computed per namespace")
+        print(f"   - Milvus semantic checking: {'enabled' if self.milvus_client else 'disabled'}")
+        print(f"   - Centroid computed per partition")
     
-    def is_out_of_scope(self, question: str, namespace: str = "zibtek") -> Tuple[bool, str]:
+    def is_out_of_scope(self, question: str, partition_name: str = "_default") -> Tuple[bool, str]:
         """Check if question is out of scope using hard keywords and semantic similarity.
         
         Args:
             question: User's question to check
-            namespace: Pinecone namespace to check against (for multi-tenant support)
+            partition_name: Milvus partition name to check against (for multi-tenant support)
             
         Returns:
             Tuple[bool, str]: (is_out_of_scope, reason)
@@ -73,13 +82,14 @@ class ZibtekGuards:
                 logger.info(f"Question blocked by hard keywords: {keyword_reason}")
                 return True, f"Hard keyword filter: {keyword_reason}"
             
-            # Layer 2: Semantic similarity check (TEMPORARILY DISABLED for multi-tenant testing)
-            # TODO: Re-enable after fixing centroid computation for small datasets
-            #semantic_blocked, semantic_reason = self._check_semantic_scope(question, namespace)
-            #if semantic_blocked:
-            #    logger.info(f"Question blocked by semantic filter: {semantic_reason}")
-            #    return True, f"Semantic filter: {semantic_reason}"
-            logger.info(f"⚠️  Semantic filter temporarily disabled for multi-tenant testing")
+            # Layer 2: Semantic similarity check (optional, requires Milvus)
+            if self.milvus_client:
+                semantic_blocked, semantic_reason = self._check_semantic_scope(question, partition_name)
+                if semantic_blocked:
+                    logger.info(f"Question blocked by semantic filter: {semantic_reason}")
+                    return True, f"Semantic filter: {semantic_reason}"
+            else:
+                logger.info(f"⚠️  Semantic filter disabled (Milvus not configured)")
             
             logger.info(f"Question passed all scope checks: {question[:50]}...")
             return False, "In scope"
@@ -133,23 +143,23 @@ class ZibtekGuards:
         
         return False, "No blocked keywords"
     
-    def _check_semantic_scope(self, question: str, namespace: str = "zibtek") -> Tuple[bool, str]:
+    def _check_semantic_scope(self, question: str, partition_name: str = "_default") -> Tuple[bool, str]:
         """Check if question is semantically similar to corpus using centroid.
         
         Args:
             question: Question to check
-            namespace: Pinecone namespace to check against
+            partition_name: Milvus partition name to check against
             
         Returns:
             Tuple[bool, str]: (is_blocked, reason)
         """
         try:
-            logger.info(f"🔍 Checking semantic scope for namespace: '{namespace}'")
+            logger.info(f"🔍 Checking semantic scope for partition: '{partition_name}'")
             
             # Get or compute corpus centroid
-            centroid = self._get_corpus_centroid(namespace)
+            centroid = self._get_corpus_centroid(partition_name)
             if centroid is None:
-                logger.warning(f"Could not compute corpus centroid for namespace '{namespace}', allowing question")
+                logger.warning(f"Could not compute corpus centroid for partition '{partition_name}', allowing question")
                 return False, "Centroid unavailable"
             
             # Get question embedding
@@ -161,32 +171,36 @@ class ZibtekGuards:
             # Calculate cosine similarity
             similarity = self._cosine_similarity(question_embedding, centroid)
             
-            logger.info(f"📊 Semantic similarity for namespace '{namespace}': {similarity:.3f} (threshold: {self.min_scope_sim})")
+            logger.info(f"📊 Semantic similarity for partition '{partition_name}': {similarity:.3f} (threshold: {self.min_scope_sim})")
             
             if similarity < self.min_scope_sim:
-                logger.warning(f"❌ Question rejected - Low similarity to namespace '{namespace}': {similarity:.3f} < {self.min_scope_sim}")
+                logger.warning(f"❌ Question rejected - Low similarity to partition '{partition_name}': {similarity:.3f} < {self.min_scope_sim}")
                 return True, f"Low similarity to corpus: {similarity:.3f} < {self.min_scope_sim}"
             
-            logger.info(f"✅ Question allowed - Good similarity to namespace '{namespace}': {similarity:.3f}")
+            logger.info(f"✅ Question allowed - Good similarity to partition '{partition_name}': {similarity:.3f}")
             return False, f"Good similarity to corpus: {similarity:.3f}"
             
         except Exception as e:
             logger.error(f"Error in semantic scope check: {e}")
             return False, f"Semantic check failed: {e}"
     
-    def _get_corpus_centroid(self, namespace: str = "zibtek") -> Optional[np.ndarray]:
-        """Get or compute the corpus centroid vector for a specific namespace.
+    def _get_corpus_centroid(self, partition_name: str = "_default") -> Optional[np.ndarray]:
+        """Get or compute the corpus centroid vector for a specific partition.
         
         Args:
-            namespace: Pinecone namespace to compute centroid for
+            partition_name: Milvus partition name to compute centroid for
             
         Returns:
             Optional[np.ndarray]: Corpus centroid vector
         """
-        # Create a namespace-specific cache key
-        cache_key = f"centroid_{namespace}"
+        if not self.milvus_client:
+            logger.warning("Milvus client not initialized")
+            return None
         
-        # Check if we have a valid cached centroid for this namespace
+        # Create a partition-specific cache key
+        cache_key = f"centroid_{partition_name}"
+        
+        # Check if we have a valid cached centroid for this partition
         if (hasattr(self, '_centroid_cache') and 
             cache_key in self._centroid_cache and
             self._centroid_cache[cache_key].get('time') and
@@ -194,57 +208,46 @@ class ZibtekGuards:
             return self._centroid_cache[cache_key]['centroid']
         
         try:
-            # Fetch random vectors from Pinecone
-            index = self.pc.Index(self.index_name)
+            # Get collection stats
+            stats = self.milvus_client.describe_collection(self.collection_name)
+            vector_count = stats.get("num_entities", 0)
             
-            # Get index stats to determine available IDs
-            stats = index.describe_index_stats()
-            logger.info(f"📊 Index stats type: {type(stats)}")
-            logger.info(f"📊 Index stats dir: {[x for x in dir(stats) if not x.startswith('_')]}")
-            
-            # Try different ways to access namespace stats
-            if hasattr(stats, 'namespaces'):
-                namespace_stats = stats.namespaces.get(namespace, None)
-                vector_count = namespace_stats.vector_count if namespace_stats else 0
-            else:
-                namespace_stats = stats.get('namespaces', {}).get(namespace, {})
-                vector_count = namespace_stats.get('vector_count', 0)
-            
-            logger.info(f"📊 Namespace '{namespace}' has {vector_count} vectors")
+            logger.info(f"📊 Partition '{partition_name}' has approximately {vector_count} vectors")
             
             if vector_count == 0:
-                logger.warning(f"No vectors found in Pinecone namespace '{namespace}'")
+                logger.warning(f"No vectors found in Milvus partition '{partition_name}'")
                 return None
             
             # If very few vectors, skip semantic check as centroid won't be representative
             if vector_count < 10:
-                logger.warning(f"Only {vector_count} vectors in namespace '{namespace}' - skipping centroid computation (need at least 10)")
+                logger.warning(f"Only {vector_count} vectors in partition '{partition_name}' - skipping centroid computation (need at least 10)")
                 return None
             
-            # Sample up to 500 random vectors (or all if fewer available)
+            # Sample up to 500 random vectors
             sample_size = min(500, vector_count)
             logger.info(f"Sampling {sample_size} vectors for corpus centroid")
             
-            # Fetch vectors by doing similarity search with a random query
-            # This is a workaround since Pinecone doesn't have a direct "fetch random" API
+            # Query with a dummy vector to get sample documents
             dummy_query = [0.0] * 1536  # OpenAI embedding dimension
             
-            results = index.query(
-                vector=dummy_query,
-                top_k=sample_size,
-                namespace=namespace,
-                include_values=True
+            results = self.milvus_client.search(
+                collection_name=self.collection_name,
+                data=[dummy_query],
+                anns_field="dense_vector",
+                limit=sample_size,
+                partition_names=[partition_name],
+                output_fields=["dense_vector"]
             )
             
-            if not results or not hasattr(results, 'matches') or not results.matches:  # type: ignore
-                logger.warning(f"No vectors returned from Pinecone query for namespace '{namespace}'")
+            if not results or not results[0]:
+                logger.warning(f"No vectors returned from Milvus query for partition '{partition_name}'")
                 return None
             
             # Extract embeddings
             embeddings = []
-            for match in results.matches:  # type: ignore
-                if hasattr(match, 'values') and match.values:
-                    embeddings.append(match.values)
+            for hit in results[0]:
+                if 'entity' in hit and 'dense_vector' in hit['entity']:
+                    embeddings.append(hit['entity']['dense_vector'])
             
             if not embeddings:
                 logger.warning("No valid embeddings found")
@@ -254,17 +257,17 @@ class ZibtekGuards:
             embeddings_array = np.array(embeddings)
             centroid = np.mean(embeddings_array, axis=0)
             
-            # Cache the result for this namespace
+            # Cache the result for this partition
             if not hasattr(self, '_centroid_cache'):
                 self._centroid_cache = {}
             
-            cache_key = f"centroid_{namespace}"
+            cache_key = f"centroid_{partition_name}"
             self._centroid_cache[cache_key] = {
                 'centroid': centroid,
                 'time': datetime.now()
             }
             
-            logger.info(f"Computed corpus centroid for namespace '{namespace}' from {len(embeddings)} vectors")
+            logger.info(f"Computed corpus centroid for partition '{partition_name}' from {len(embeddings)} vectors")
             return centroid
             
         except Exception as e:
@@ -480,18 +483,18 @@ SECURITY:
 
 
 # Convenience functions
-def is_out_of_scope(question: str, namespace: Optional[str] = None) -> Tuple[bool, str]:
+def is_out_of_scope(question: str, partition_name: Optional[str] = None) -> Tuple[bool, str]:
     """Check if question is out of scope.
     
     Args:
         question: User's question
-        namespace: Optional namespace for multi-tenant checking
+        partition_name: Optional partition name for multi-tenant checking
         
     Returns:
         Tuple[bool, str]: (is_out_of_scope, reason)
     """
     guards = ZibtekGuards()
-    return guards.is_out_of_scope(question, namespace or "zibtek")
+    return guards.is_out_of_scope(question, partition_name or "_default")
 
 
 def sanitize(text: str) -> str:

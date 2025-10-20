@@ -1,231 +1,165 @@
-"""Retrieval system for Zibtek chatbot using LangChain and Pinecone."""
+"""Milvus-based retrieval system for Zibtek chatbot.
+
+Uses Milvus/Zilliz Cloud with hybrid search (dense vectors + BM25 sparse vectors).
+"""
 
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from dotenv import load_dotenv
 
 from langchain_openai import OpenAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
 from langchain_core.documents import Document
-from langchain_core.vectorstores import VectorStoreRetriever
-from pinecone import Pinecone
+from pymilvus import MilvusClient, AnnSearchRequest, RRFRanker
+
 
 load_dotenv()
 
-
-class ZibtekRetriever:
-    """Retrieval system for Zibtek knowledge base."""
+class MilvusRetriever:
+    """Milvus-based retriever with built-in hybrid search (dense + BM25)."""
     
     def __init__(self):
-        """Initialize the retriever with Pinecone and OpenAI."""
-        # Get environment variables
-        self.pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        """Initialize Milvus retriever."""
+        self.milvus_uri = os.getenv("MILVUS_URI")
+        self.milvus_token = os.getenv("MILVUS_TOKEN")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.collection_name = os.getenv("MILVUS_COLLECTION", "documents")
         
-        if not self.pinecone_api_key:
-            raise ValueError("PINECONE_API_KEY environment variable is required")
+        if not self.milvus_uri or not self.milvus_token:
+            raise ValueError("MILVUS_URI and MILVUS_TOKEN environment variables are required")
         if not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
-        # Initialize Pinecone
-        self.pc = Pinecone(api_key=self.pinecone_api_key)
-        self.index_name = "zibtek-chatbot-index"
+        # Initialize Milvus client
+        self.client = MilvusClient(uri=self.milvus_uri, token=self.milvus_token)
         
         # Initialize OpenAI embeddings
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small"
-        )
+        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
         
-        # Initialize vector store (namespace will be specified per query)
-        self.vector_store = PineconeVectorStore(
-            index=self.pc.Index(self.index_name),
-            embedding=self.embeddings
-        )
-        
-        print("✅ Zibtek Retriever initialized")
-        print(f"   - Index: {self.index_name}")
-        print(f"   - Namespace: dynamic (per query)")
+        print("✅ Milvus Retriever initialized")
+        print(f"   - Collection: {self.collection_name}")
         print(f"   - Embedding model: text-embedding-3-small")
+        print(f"   - Hybrid search: Dense + BM25 with RRF")
     
-    def make_pinecone_retriever(
-        self,
-        k: int = 5,
-        namespace: str = "zibtek",
-        score_threshold: Optional[float] = None
-    ) -> VectorStoreRetriever:
-        """Create a LangChain retriever for Pinecone.
-        
-        Args:
-            k: Number of documents to retrieve
-            namespace: Pinecone namespace to search
-            score_threshold: Minimum similarity score threshold
-            
-        Returns:
-            VectorStoreRetriever: Configured LangChain retriever
-        """
-        # Create search kwargs
-        search_kwargs = {
-            "k": k,
-            "namespace": namespace
-        }
-        
-        if score_threshold is not None:
-            search_kwargs["score_threshold"] = score_threshold
-        
-        # Create retriever
-        retriever = self.vector_store.as_retriever(
-            search_type="similarity_score_threshold" if score_threshold else "similarity",
-            search_kwargs=search_kwargs
-        )
-        
-        return retriever
-    
-    def retrieve(
+    def hybrid_search(
         self,
         query: str,
         k: int = 5,
-        namespace: str = "zibtek",
-        score_threshold: Optional[float] = None
-    ) -> List[Document]:
-        """Retrieve documents for a query.
+        partition_name: str = "_default",
+        dense_weight: float = 0.5,
+        sparse_weight: float = 0.5
+    ) -> List[Tuple[Document, float]]:
+        """Perform hybrid search (dense + BM25) with multi-tenant support.
         
         Args:
-            query: Search query
-            k: Number of documents to retrieve
-            namespace: Pinecone namespace to search
-            score_threshold: Minimum similarity score threshold
-            
+            query: Search query text
+            k: Number of results to return
+            partition_name: Partition name for tenant isolation (e.g., "org_zibtek")
+            dense_weight: Weight for dense vector search (0-1)
+            sparse_weight: Weight for sparse BM25 search (0-1)
+        
         Returns:
-            List[Document]: Retrieved documents with metadata including scores
+            List of (Document, score) tuples
         """
         try:
-            # Create retriever
-            retriever = self.make_pinecone_retriever(
-                k=k,
-                namespace=namespace,
-                score_threshold=score_threshold
+            # Generate query embedding
+            query_vector = self.embeddings.embed_query(query)
+            
+            # Load collection if not loaded
+            try:
+                self.client.load_collection(self.collection_name)
+            except:
+                pass  # Already loaded
+            
+            # Create search requests
+            dense_req = AnnSearchRequest(
+                data=[query_vector],
+                anns_field="dense_vector",
+                param={"metric_type": "COSINE"},
+                limit=k * 2  # Fetch more for better RRF results
             )
             
-            # Perform retrieval
-            docs = retriever.invoke(query)
+            sparse_req = AnnSearchRequest(
+                data=[query],  # Milvus will tokenize and search BM25
+                anns_field="sparse_vector",
+                param={"metric_type": "BM25"},
+                limit=k * 2
+            )
+            print(f"sparse_req: {sparse_req}")
             
-            # Add scores to metadata if available
-            # Note: LangChain's similarity_score_threshold search includes scores
-            for doc in docs:
-                if hasattr(doc, 'metadata') and 'score' not in doc.metadata:
-                    # For compatibility, we'll perform a direct similarity search
-                    # to get scores when using regular similarity search
-                    pass
+            # Perform hybrid search
+            results = self.client.hybrid_search(
+                collection_name=self.collection_name,
+                reqs=[dense_req, sparse_req],
+                ranker=RRFRanker(),  # Reciprocal Rank Fusion
+                limit=k,
+                partition_names=[partition_name],  # Tenant isolation
+                output_fields=["text", "id"]  # Get all dynamic fields too
+            )
             
-            return docs
+            # Convert to LangChain Document format
+            documents = []
+            for hits in results:
+                for hit in hits:
+                    entity = hit.get('entity', {})
+                    
+                    # Create Document with metadata
+                    doc = Document(
+                        page_content=entity.get('text', ''),
+                        metadata={
+                            'id': entity.get('id', ''),
+                            'score': hit.get('distance', 0.0),
+                            'partition': partition_name,
+                            **{k: v for k, v in entity.items() if k not in ['text', 'id']}
+                        }
+                    )
+                    documents.append((doc, hit.get('distance', 0.0)))
+            
+            return documents
             
         except Exception as e:
-            print(f"❌ Retrieval error: {e}")
+            print(f"❌ Hybrid search error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def retrieve_with_scores(
         self,
         query: str,
         k: int = 5,
-        namespace: str = "zibtek",
-        score_threshold: Optional[float] = None
-    ) -> List[tuple[Document, float]]:
-        """Retrieve documents with explicit scores.
+        partition_name: str = "_default"
+    ) -> List[Tuple[Document, float]]:
+        """Alias for hybrid_search to maintain compatibility with existing code.
         
         Args:
             query: Search query
-            k: Number of documents to retrieve
-            namespace: Pinecone namespace to search
-            score_threshold: Minimum similarity score threshold
-            
+            k: Number of results
+            partition_name: Partition for tenant isolation (replaces namespace)
+        
         Returns:
-            List[tuple[Document, float]]: Documents with their similarity scores
+            List of (Document, score) tuples
         """
-        try:
-            # Use direct similarity search with scores
-            search_kwargs = {
-                "k": k,
-                "namespace": namespace
-            }
-            
-            docs_with_scores = self.vector_store.similarity_search_with_score(
-                query,
-                **search_kwargs
-            )
-            
-            # Filter by score threshold if provided
-            if score_threshold is not None:
-                docs_with_scores = [
-                    (doc, score) for doc, score in docs_with_scores
-                    if score >= score_threshold
-                ]
-            
-            # Add scores to document metadata
-            for doc, score in docs_with_scores:
-                doc.metadata["score"] = score
-            
-            return docs_with_scores
-            
-        except Exception as e:
-            print(f"❌ Retrieval with scores error: {e}")
-            return []
+        return self.hybrid_search(query, k, partition_name)
     
-    def search_by_metadata(
-        self,
-        query: str,
-        metadata_filter: Dict[str, Any],
-        k: int = 5,
-        namespace: str = "zibtek"
-    ) -> List[Document]:
-        """Search with custom metadata filters.
+    def get_retriever_stats(self, partition_name: str = "_default") -> Dict[str, Any]:
+        """Get collection/partition statistics.
         
         Args:
-            query: Search query
-            metadata_filter: Additional metadata filters
-            k: Number of documents to retrieve
-            namespace: Pinecone namespace to search
-            
-        Returns:
-            List[Document]: Filtered and retrieved documents
-        """
-        try:
-            # Combine default filter with custom filters
-            combined_filter = {"site": "https://www.zibtek.com"}
-            combined_filter.update(metadata_filter)
-            
-            docs = self.vector_store.similarity_search(
-                query,
-                k=k,
-                namespace=namespace,
-                filter=combined_filter
-            )
-            
-            return docs
-            
-        except Exception as e:
-            print(f"❌ Metadata search error: {e}")
-            return []
-    
-    def get_retriever_stats(self, namespace: str = "zibtek") -> Dict[str, Any]:
-        """Get statistics about the retriever index.
+            partition_name: Partition to check stats for
         
-        Args:
-            namespace: Pinecone namespace to check
-            
         Returns:
-            Dict[str, Any]: Index statistics
+            Dictionary with statistics
         """
         try:
-            index = self.pc.Index(self.index_name)
-            stats = index.describe_index_stats()
-            
-            namespace_stats = stats.get('namespaces', {}).get(namespace, {})
+            stats = self.client.describe_collection(self.collection_name)
+            partitions = self.client.list_partitions(self.collection_name)
             
             return {
-                "total_vectors": namespace_stats.get('vector_count', 0),
-                "dimension": stats.get('dimension', 0),
-                "index_fullness": stats.get('index_fullness', 0),
-                "namespace": namespace
+                "collection_name": self.collection_name,
+                "total_entities": stats.get("num_entities", 0),
+                "partitions": partitions,
+                "partition": partition_name,
+                "dimension": 1536,
+                "search_type": "hybrid (dense + BM25 + RRF)"
             }
             
         except Exception as e:
@@ -233,68 +167,41 @@ class ZibtekRetriever:
             return {}
 
 
-def make_pinecone_retriever(
-    k: int = 5,
-    namespace: str = "zibtek",
-    score_threshold: Optional[float] = None
-) -> VectorStoreRetriever:
-    """Convenience function to create a Pinecone retriever.
-    
-    Args:
-        k: Number of documents to retrieve
-        namespace: Pinecone namespace to search
-        score_threshold: Minimum similarity score threshold
-        
-    Returns:
-        VectorStoreRetriever: Configured LangChain retriever
-    """
-    retriever_instance = ZibtekRetriever()
-    return retriever_instance.make_pinecone_retriever(
-        k=k,
-        namespace=namespace,
-        score_threshold=score_threshold
-    )
-
-
-def retrieve(query: str, k: int = 5) -> List[Document]:
-    """Convenience function for simple retrieval.
-    
-    Args:
-        query: Search query
-        k: Number of documents to retrieve
-        
-    Returns:
-        List[Document]: Retrieved documents with metadata
-    """
-    retriever_instance = ZibtekRetriever()
-    return retriever_instance.retrieve(query=query, k=k)
-
-
-# Example usage and testing
+# Example usage
 if __name__ == "__main__":
-    # Test the retriever
+    print("=" * 60)
+    print("Testing Milvus Retriever")
+    print("=" * 60)
+    
     try:
-        retriever = ZibtekRetriever()
+        retriever = MilvusRetriever()
         
         # Test query
-        test_query = "What services does Zibtek offer?"
-        print(f"\n🔍 Testing retrieval for: '{test_query}'")
+        test_query = "Who is hassan?"
+        partition = "masaischool"
+        
+        print(f"\n🔍 Testing hybrid search")
+        print(f"   Query: '{test_query}'")
+        print(f"   Partition: '{partition}'")
         
         # Retrieve documents
-        docs = retriever.retrieve(test_query, k=3)
+        docs = retriever.hybrid_search(test_query, k=3, partition_name=partition)
         
-        print(f"✅ Retrieved {len(docs)} documents")
+        print(f"\n✅ Retrieved {len(docs)} documents")
         
-        for i, doc in enumerate(docs, 1):
+        for i, (doc, score) in enumerate(docs, 1):
             print(f"\n📄 Document {i}:")
-            print(f"   URL: {doc.metadata.get('url', 'N/A')}")
-            print(f"   Title: {doc.metadata.get('title', 'N/A')}")
-            print(f"   Score: {doc.metadata.get('score', 'N/A')}")
-            print(f"   Content: {doc.page_content[:200]}...")
+            print(f"   ID: {doc.metadata.get('id', 'N/A')}")
+            print(f"   Score: {score:.4f}")
+            print(f"   Content: {doc.page_content[:150]}...")
         
         # Get stats
-        stats = retriever.get_retriever_stats()
-        print(f"\n📊 Index Stats: {stats}")
+        stats = retriever.get_retriever_stats(partition)
+        print(f"\n📊 Collection Stats:")
+        for key, value in stats.items():
+            print(f"   {key}: {value}")
         
     except Exception as e:
         print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()

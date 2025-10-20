@@ -7,9 +7,8 @@ from typing import Optional, Dict, Any
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.ingest.ingest import ZibtekIngestor
+from src.ingest.ingest import MilvusIngestor
 from src.storage.organizations import (
-    get_website,
     update_website_status,
     update_ingestion_job
 )
@@ -41,9 +40,9 @@ def run_ingestion_job(
         
         # Initialize ingestor
         print(f"🚀 Starting ingestion for {domain} (namespace: {namespace})")
-        ingestor = ZibtekIngestor(
+        ingestor = MilvusIngestor(
             domain=domain,
-            namespace=namespace,
+            partition_name=namespace,
             max_pages=max_pages
         )
         
@@ -84,10 +83,10 @@ def run_ingestion_job(
         update_ingestion_job(job_id, progress_percent=80)
         
         # Step 5: Store in Pinecone (100%)
-        success = ingestor.store_in_pinecone(chunks_with_embeddings)
+        success = ingestor.store_in_milvus(chunks_with_embeddings)
         
         if not success:
-            raise Exception("Failed to store chunks in Pinecone")
+            raise Exception("Failed to store chunks in Milvus")
         
         # Update final status
         update_ingestion_job(

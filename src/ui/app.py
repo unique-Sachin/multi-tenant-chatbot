@@ -199,7 +199,7 @@ def send_message_stream(question: str, namespace: str, stream_placeholder) -> Op
     data = {
         "question": question,
         "session_id": st.session_state.current_session_id,
-        "namespace": namespace
+        "partition_name": namespace  # Updated: using partition_name for Milvus
     }
     
     url = f"{API_BASE_URL}/chat/stream"
@@ -281,16 +281,6 @@ def send_message_stream(question: str, namespace: str, stream_placeholder) -> Op
     except Exception as e:
         stream_placeholder.error(f"Connection error: {str(e)}")
         return None
-
-
-def send_message(question: str, namespace: str) -> Optional[Dict]:
-    """Send message to chat API (fallback to non-streaming)."""
-    data = {
-        "question": question,
-        "session_id": st.session_state.current_session_id,
-        "namespace": namespace
-    }
-    return call_api_with_auth("POST", "/chat", data)
 
 
 def render_auth_page():

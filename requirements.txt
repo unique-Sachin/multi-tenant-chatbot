@@ -2,10 +2,10 @@ fastapi
 uvicorn[standard]
 langchain
 langchain-openai
-langchain-pinecone
 langchain-core
+langchain-milvus
 openai
-pinecone
+pymilvus
 trafilatura
 beautifulsoup4
 lxml

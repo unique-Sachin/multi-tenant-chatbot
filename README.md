@@ -585,15 +585,14 @@ python src/app/server.py
 
 ### API Endpoints
 
-**POST /chat** - Main chat endpoint
+**POST /chat/stream** - Main chat endpoint
 ```bash
-curl -X POST http://localhost:8000/chat \
+curl -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"question": "What services does Zibtek offer?"}'
 ```
 
 **GET /health** - Service health check  
-**GET /stats** - Usage statistics
 
 ### Complete Pipeline
 1. **Guardrails**: Multi-layer safety validation
@@ -665,7 +664,7 @@ mypy src/
 - **Authentication**: JWT tokens with bcrypt password hashing
 - **Caching**: Redis for performance optimization
 - **Embeddings**: OpenAI text-embedding-3-small
-- **LLM**: OpenAI GPT-4-turbo for response generation
+- **LLM**: OpenAI gpt-4o-mini for response generation
 - **Reranking**: Cohere for result reranking
 - **Web Scraping**: Trafilatura with BeautifulSoup fallback
 - **Search**: Hybrid search (Vector + BM25) with RRF fusion

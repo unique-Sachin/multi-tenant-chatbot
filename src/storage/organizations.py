@@ -79,7 +79,7 @@ def create_slug(name: str) -> str:
     return slug
 
 
-def create_namespace(org_slug: str, website_url: str = None) -> str:
+def create_namespace(org_slug: str) -> str:
     """Create namespace for organization.
     
     All websites and documents under the same organization share one namespace.
