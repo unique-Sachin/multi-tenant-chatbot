@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-747d3d71730d.herokuapp.com")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-42bb2cdc74d2.herokuapp.com")
 
 # Debug: Show which API we're connecting to
 print(f"🌐 Connecting to API: {API_BASE_URL}")

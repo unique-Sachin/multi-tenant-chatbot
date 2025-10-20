@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 import os
 
 # Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-747d3d71730d.herokuapp.com")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-42bb2cdc74d2.herokuapp.com")
 
 
 def get_auth_headers():
