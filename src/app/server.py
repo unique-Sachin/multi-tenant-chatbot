@@ -460,19 +460,20 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
                 "method": "milvus_hybrid (dense + BM25 + RRF)",
                 "partition": partition_name
             }
-            retrieval_steps["method"] = "milvus_hybrid"
+
+            retrieval_steps["method"] = "Milvus Hybrid (dense + BM25 + RRF)"
             
             print(f"✅ Milvus hybrid retrieval complete: {len(docs)} documents from partition '{partition_name}'")
-            
-            # Filter high-confidence docs and limit to top 4
-            filtered_docs = docs[:4]  # Take top 4 instead of filtering by score
-            
+
+            # Filter high-confidence docs and limit to top 5
+            filtered_docs = docs[:5]  # Take top 5 instead of filtering by score
+
             # Step 3: Rerank documents for better precision (optional)
             rerank_scores = {}
-            if RERANK_ENABLED and len(docs) > 4:
+            if RERANK_ENABLED and len(docs) > 5:
                 try:
                     print(f"🎯 Reranking {len(docs)} documents with Cohere...")
-                    filtered_docs, rerank_scores = rerank_with_scores(request.question, docs, top_n=4)
+                    filtered_docs, rerank_scores = rerank_with_scores(request.question, docs, top_n=5)
                     print(f"✅ Reranked to top {len(filtered_docs)} documents")
                     
                     # Capture reranking step information
@@ -484,7 +485,7 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
                     }
                 except Exception as e:
                     print(f"⚠️  Reranking failed, using original order: {e}")
-                    filtered_docs = docs[:4]
+                    filtered_docs = docs[:5]
                     rerank_scores = {}
                     retrieval_steps["reranking"] = {
                         "enabled": True,
@@ -570,6 +571,9 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             
             # Get LLM response with streaming
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+            # Count input tokens for cost tracking and logging
+            input_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
+            print(f"💰 Input tokens: {input_tokens}")
             
             # Stream the response
             full_response = ""

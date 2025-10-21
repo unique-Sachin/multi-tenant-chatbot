@@ -347,48 +347,6 @@ def render_retrieval_steps(retrieval_steps: Dict[str, Any]):
         st.markdown(f"**Method:** `{method}`")
         st.markdown("---")
         
-        # Vector Search
-        vector_info = retrieval_steps.get("vector_search", {})
-        if vector_info:
-            st.markdown("### 1️⃣ Vector Search (Semantic)")
-            st.write(f"**Retrieved:** {vector_info.get('count', 0)} documents")
-            
-            if vector_info.get('scores'):
-                st.write("**Top Scores:**")
-                scores_data = []
-                for doc_id, score in list(vector_info['scores'].items())[:3]:
-                    scores_data.append({"Document ID": doc_id[:50], "Similarity": f"{score:.4f}"})
-                if scores_data:
-                    st.dataframe(scores_data, use_container_width=True, hide_index=True)
-        
-        # BM25 Search
-        bm25_info = retrieval_steps.get("bm25_search", {})
-        if bm25_info and bm25_info.get('count', 0) > 0:
-            st.markdown("### 2️⃣ BM25 Search (Keyword)")
-            st.write(f"**Retrieved:** {bm25_info.get('count', 0)} documents")
-            
-            if bm25_info.get('scores'):
-                st.write("**Top Scores:**")
-                scores_data = []
-                for doc_id, score in list(bm25_info['scores'].items())[:3]:
-                    scores_data.append({"Document ID": doc_id[:50], "BM25 Score": f"{score:.4f}"})
-                if scores_data:
-                    st.dataframe(scores_data, use_container_width=True, hide_index=True)
-        
-        # RRF Fusion
-        rrf_info = retrieval_steps.get("rrf_fusion", {})
-        if rrf_info and rrf_info.get('count', 0) > 0:
-            st.markdown("### 3️⃣ RRF Fusion (Reciprocal Rank)")
-            st.write(f"**Fused:** {rrf_info.get('count', 0)} documents")
-            
-            if rrf_info.get('scores'):
-                st.write("**Top Fusion Scores:**")
-                scores_data = []
-                for doc_id, score in list(rrf_info['scores'].items())[:3]:
-                    scores_data.append({"Document ID": doc_id[:50], "RRF Score": f"{score:.4f}"})
-                if scores_data:
-                    st.dataframe(scores_data, use_container_width=True, hide_index=True)
-        
         # Reranking
         rerank_info = retrieval_steps.get("reranking", {})
         if rerank_info:
