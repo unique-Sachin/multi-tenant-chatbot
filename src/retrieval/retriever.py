@@ -45,9 +45,7 @@ class MilvusRetriever:
         query: str,
         k: int = 5,
         partition_name: str = "_default",
-        dense_weight: float = 0.5,
-        sparse_weight: float = 0.5
-    ) -> List[Tuple[Document, float]]:
+    ) -> Any:
         """Perform hybrid search (dense + BM25) with multi-tenant support.
         
         Args:
@@ -71,20 +69,24 @@ class MilvusRetriever:
                 pass  # Already loaded
             
             # Create search requests
+            # Use larger multiplier for better RRF results
+            # RRF needs diverse candidate pools to effectively combine rankings
+            search_limit = max(k * 2, 20)  # At least 20 candidates, or 2x requested results
+            
             dense_req = AnnSearchRequest(
                 data=[query_vector],
                 anns_field="dense_vector",
                 param={"metric_type": "COSINE"},
-                limit=k * 2  # Fetch more for better RRF results
+                limit=search_limit
             )
+
             
             sparse_req = AnnSearchRequest(
                 data=[query],  # Milvus will tokenize and search BM25
                 anns_field="sparse_vector",
                 param={"metric_type": "BM25"},
-                limit=k * 2
+                limit=search_limit
             )
-            print(f"sparse_req: {sparse_req}")
             
             # Perform hybrid search
             results = self.client.hybrid_search(
@@ -93,7 +95,7 @@ class MilvusRetriever:
                 ranker=RRFRanker(),  # Reciprocal Rank Fusion
                 limit=k,
                 partition_names=[partition_name],  # Tenant isolation
-                output_fields=["text", "id"]  # Get all dynamic fields too
+                output_fields=["text", "id", "url", "title", "description", "chunk_index"]
             )
             
             # Convert to LangChain Document format
@@ -102,14 +104,20 @@ class MilvusRetriever:
                 for hit in hits:
                     entity = hit.get('entity', {})
                     
+                    # Use text for display
+                    display_text = entity.get('text', '')
+                    
                     # Create Document with metadata
                     doc = Document(
-                        page_content=entity.get('text', ''),
+                        page_content=display_text,
                         metadata={
                             'id': entity.get('id', ''),
+                            'url': entity.get('url', ''),
+                            'title': entity.get('title', ''),
+                            'description': entity.get('description', ''),
+                            'chunk_index': entity.get('chunk_index', 0),
                             'score': hit.get('distance', 0.0),
                             'partition': partition_name,
-                            **{k: v for k, v in entity.items() if k not in ['text', 'id']}
                         }
                     )
                     documents.append((doc, hit.get('distance', 0.0)))
@@ -139,6 +147,71 @@ class MilvusRetriever:
             List of (Document, score) tuples
         """
         return self.hybrid_search(query, k, partition_name)
+    
+    def search_by_url(
+        self,
+        url: str,
+        partition_name: str = "_default",
+        exact_match: bool = True
+    ) -> List[Document]:
+        """Search documents by URL metadata.
+        
+        Args:
+            url: URL to search for
+            partition_name: Partition name for tenant isolation
+            exact_match: If True, match exact URL. If False, match URLs containing the string.
+        
+        Returns:
+            List of Document objects matching the URL
+        """
+        try:
+            # Load collection if not loaded
+            try:
+                self.client.load_collection(self.collection_name)
+            except:
+                pass  # Already loaded
+            
+            # Build filter expression
+            if exact_match:
+                filter_expr = f'url == "{url}"'
+            else:
+                # For partial match, use LIKE operator
+                filter_expr = f'url like "%{url}%"'
+            
+            # Query by filter
+            results = self.client.query(
+                collection_name=self.collection_name,
+                filter=filter_expr,
+                output_fields=["text", "id", "url", "title", "description", "chunk_index"],
+                partition_names=[partition_name]
+            )
+            
+            # Convert to LangChain Document format
+            documents = []
+            for entity in results:
+                # Use text for display
+                display_text = entity.get('text', '')
+                
+                doc = Document(
+                    page_content=display_text,
+                    metadata={
+                        'id': entity.get('id', ''),
+                        'url': entity.get('url', ''),
+                        'title': entity.get('title', ''),
+                        'description': entity.get('description', ''),
+                        'chunk_index': entity.get('chunk_index', 0),
+                        'partition': partition_name,
+                    }
+                )
+                documents.append(doc)
+            
+            return documents
+            
+        except Exception as e:
+            print(f"❌ URL search error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
     
     def get_retriever_stats(self, partition_name: str = "_default") -> Dict[str, Any]:
         """Get collection/partition statistics.
@@ -177,8 +250,8 @@ if __name__ == "__main__":
         retriever = MilvusRetriever()
         
         # Test query
-        test_query = "Who is hassan?"
-        partition = "masaischool"
+        test_query = "Is there any phone number to contact Zibtek?"
+        partition = "zibtek"
         
         print(f"\n🔍 Testing hybrid search")
         print(f"   Query: '{test_query}'")
@@ -187,13 +260,15 @@ if __name__ == "__main__":
         # Retrieve documents
         docs = retriever.hybrid_search(test_query, k=3, partition_name=partition)
         
-        print(f"\n✅ Retrieved {len(docs)} documents")
+        # print(f"\n✅ Retrieved {len(docs)} documents")x
+        # print(docs)
         
         for i, (doc, score) in enumerate(docs, 1):
             print(f"\n📄 Document {i}:")
             print(f"   ID: {doc.metadata.get('id', 'N/A')}")
+            print(f"   URL: {doc.metadata.get('url', 'N/A')}")
             print(f"   Score: {score:.4f}")
-            print(f"   Content: {doc.page_content[:150]}...")
+            print(f"   Content: {doc.page_content}...")
         
         # Get stats
         stats = retriever.get_retriever_stats(partition)

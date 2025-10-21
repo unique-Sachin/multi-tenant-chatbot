@@ -13,7 +13,6 @@ dependencies = [
     "langchain-openai",
     "openai",
     "pinecone-client",
-    "trafilatura",
     "beautifulsoup4",
     "rank-bm25",
     "redis",
