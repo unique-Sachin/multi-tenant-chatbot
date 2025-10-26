@@ -14,7 +14,6 @@ dependencies = [
     "openai",
     "pinecone-client",
     "beautifulsoup4",
-    "rank-bm25",
     "redis",
     "tenacity",
     "slowapi",

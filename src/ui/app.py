@@ -18,6 +18,122 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://zibtek-chatbot-42bb2cdc74d2.he
 # Debug: Show which API we're connecting to
 print(f"🌐 Connecting to API: {API_BASE_URL}")
 
+# Custom CSS for animations
+CUSTOM_CSS = """
+<style>
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes slideIn {
+    from { transform: translateX(-20px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+.intent-badge {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-weight: 600;
+    font-size: 14px;
+    margin: 10px 0;
+    animation: fadeIn 0.5s ease-out;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.loading-step {
+    padding: 12px 20px;
+    margin: 8px 0;
+    border-left: 4px solid #667eea;
+    background: linear-gradient(90deg, rgba(102, 126, 234, 0.1) 0%, transparent 100%);
+    border-radius: 4px;
+    animation: slideIn 0.4s ease-out;
+    font-size: 15px;
+    color: #333;
+}
+
+.progress-step {
+    padding: 12px 20px;
+    margin: 8px 0;
+    border-left: 4px solid #10b981;
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.1) 0%, transparent 100%);
+    border-radius: 4px;
+    animation: fadeIn 0.5s ease-out;
+    font-size: 15px;
+    color: #065f46;
+    font-weight: 500;
+}
+
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 3px solid rgba(102, 126, 234, 0.3);
+    border-radius: 50%;
+    border-top-color: #667eea;
+    animation: spin 1s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.status-container {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    animation: fadeIn 0.3s ease-out;
+}
+
+.fade-out {
+    animation: fadeOut 0.5s ease-out forwards;
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; transform: translateY(-10px); }
+}
+
+/* Smooth text streaming animation */
+.streaming-text {
+    animation: textFadeIn 0.2s ease-out;
+}
+
+@keyframes textFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Add subtle typing cursor effect */
+.typing-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    background-color: #667eea;
+    margin-left: 2px;
+    animation: blink 1s infinite;
+    vertical-align: text-bottom;
+}
+
+@keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+}
+</style>
+"""
+
 
 def initialize_session():
     """Initialize session state variables."""
@@ -226,16 +342,95 @@ def send_message_stream(question: str, namespace: str, stream_placeholder) -> Op
             retrieval_steps = {}
             
             # Process streaming response
+            status_messages = []
+            intent_info = None
+            status_container_html = ""
+            
             for line in response.iter_lines():
                 if line:
                     line_text = line.decode('utf-8')
                     if line_text.startswith('data: '):
                         try:
                             data_json = json.loads(line_text[6:])  # Remove 'data: ' prefix
+                            event_type = data_json.get('type')
                             
-                            if data_json.get('type') == 'token':
+                            # Handle new streaming events with animations
+                            if event_type == 'intent_detected':
+                                intent_info = data_json
+                                intent = data_json.get('intent', 'general')
+                                confidence = data_json.get('confidence', 0)
+                                source = data_json.get('source', 'unknown')
+                                
+                                # Create animated intent badge
+                                intent_emoji = {
+                                    'services': '💼',
+                                    'technology': '💻',
+                                    'contact': '📞',
+                                    'company_info': '🏢',
+                                    'meta': '🤖',
+                                    'general': '💬'
+                                }.get(intent, '💬')
+                                
+                                status_container_html = f"""
+                                <div class="status-container">
+                                    <div class="intent-badge">
+                                        {intent_emoji} Intent: {intent.replace('_', ' ').title()} ({confidence:.0%})
+                                    </div>
+                                </div>
+                                """
+                                
+                                with stream_placeholder.container():
+                                    st.markdown(CUSTOM_CSS + status_container_html, unsafe_allow_html=True)
+                            
+                            elif event_type == 'loading':
+                                msg = data_json.get('message', '')
+                                step = data_json.get('step', 0)
+                                
+                                # Add loading message with animation
+                                loading_html = f'<div class="loading-step"><span class="spinner"></span>{msg}</div>'
+                                status_container_html += loading_html
+                                
+                                with stream_placeholder.container():
+                                    st.markdown(CUSTOM_CSS + f'<div class="status-container">{status_container_html}</div>', unsafe_allow_html=True)
+                            
+                            elif event_type == 'retrieval_progress':
+                                msg = data_json.get('message', '')
+                                metadata = data_json.get('metadata', {})
+                                doc_count = metadata.get('doc_count', 0)
+                                
+                                # Add real progress with green styling
+                                progress_html = f'<div class="progress-step">✅ {msg}</div>'
+                                status_container_html += progress_html
+                                
+                                with stream_placeholder.container():
+                                    st.markdown(CUSTOM_CSS + f'<div class="status-container">{status_container_html}</div>', unsafe_allow_html=True)
+                            
+                            elif event_type == 'reranking_progress':
+                                msg = data_json.get('message', '')
+                                
+                                # Add reranking progress
+                                rerank_html = f'<div class="progress-step">🔍 {msg}</div>'
+                                status_container_html += rerank_html
+                                
+                                with stream_placeholder.container():
+                                    st.markdown(CUSTOM_CSS + f'<div class="status-container">{status_container_html}</div>', unsafe_allow_html=True)
+                            
+                            elif event_type == 'generation_preview':
+                                msg = data_json.get('message', '')
+                                
+                                # Add generation preview
+                                gen_html = f'<div class="progress-step">{msg}</div>'
+                                status_container_html += gen_html
+                                
+                                with stream_placeholder.container():
+                                    st.markdown(CUSTOM_CSS + f'<div class="status-container">{status_container_html}</div>', unsafe_allow_html=True)
+                                
+                                # Small delay before showing answer
+                                time.sleep(0.3)
+                            
+                            elif event_type == 'token':
                                 current_response = data_json.get('content', '')
-                                # Update the placeholder with current response
+                                # Clear status messages and show actual response
                                 with stream_placeholder.container():
                                     render_message({
                                         "content": current_response,
@@ -245,7 +440,7 @@ def send_message_stream(question: str, namespace: str, stream_placeholder) -> Op
                                         "timestamp": datetime.now().isoformat()
                                     }, False)
                             
-                            elif data_json.get('type') == 'complete':
+                            elif event_type == 'complete':
                                 citations = data_json.get('citations', [])
                                 is_out_of_scope = data_json.get('is_out_of_scope', False)
                                 processing_time = data_json.get('processing_time_ms', 0)
@@ -258,10 +453,12 @@ def send_message_stream(question: str, namespace: str, stream_placeholder) -> Op
                                     'citations': citations,
                                     'is_out_of_scope': is_out_of_scope,
                                     'processing_time_ms': processing_time,
-                                    'retrieval_steps': retrieval_steps
+                                    'retrieval_steps': retrieval_steps,
+                                    'intent': intent_info.get('intent') if intent_info else None,
+                                    'intent_confidence': intent_info.get('confidence') if intent_info else None
                                 }
                             
-                            elif data_json.get('type') == 'error':
+                            elif event_type == 'error':
                                 error_msg = data_json.get('content', 'Unknown error')
                                 stream_placeholder.error(f"Error: {error_msg}")
                                 return None
@@ -378,25 +575,7 @@ def render_citations(citations: List[str]):
     
     st.write("**📚 Sources:**")
     for i, url in enumerate(citations, 1):
-        from urllib.parse import urlparse
-        domain = urlparse(url).netloc or url
-        display_name = domain.replace('www.', '')
-        
-        st.markdown(
-            f'<a href="{url}" target="_blank" style="'
-            f'display: inline-block; '
-            f'margin: 4px; '
-            f'padding: 6px 12px; '
-            f'background-color: #f0f2f6; '
-            f'border-radius: 4px; '
-            f'text-decoration: none; '
-            f'color: #1f77b4; '
-            f'border: 1px solid #d1d5db; '
-            f'font-size: 0.8rem; '
-            f'font-weight: 500;">'
-            f'🔗 {display_name}</a>',
-            unsafe_allow_html=True
-        )
+        st.markdown(f"{i}. {url}")
 
 
 def render_message(message: Dict[str, Any], show_metadata: bool = True):
@@ -409,11 +588,16 @@ def render_message(message: Dict[str, Any], show_metadata: bool = True):
             st.write(message["content"])
     else:
         with st.chat_message("assistant"):
-            # For streaming messages, show simpler content
+            # For streaming messages, show simpler content with smooth animation
             if is_streaming:
-                st.write(message["content"])
-                if message["content"]:  # Only show typing indicator if there's no content yet
-                    st.caption("🤖 Thinking...")
+                # Wrap streaming text with smooth fade-in animation
+                streaming_html = f"""
+                <div class="streaming-text">
+                    {message["content"]}
+                    <span class="typing-cursor"></span>
+                </div>
+                """
+                st.markdown(streaming_html, unsafe_allow_html=True)
             else:
                 st.write(message["content"])
                 

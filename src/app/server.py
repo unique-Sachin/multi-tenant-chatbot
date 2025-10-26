@@ -48,6 +48,7 @@ from storage.documents import (
 )
 from utils.cache import create_cache_manager, CacheManager
 from utils.retries import retry_openai, retry_pinecone, retry_cohere
+from app.enhanced_streaming import EnhancedStreamManager
 
 import time
 import uuid
@@ -78,10 +79,12 @@ load_dotenv()
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
 RATELIMIT_ENABLED = os.getenv("RATELIMIT_ENABLED", "true").lower() == "true"
+INTENT_SERVICE_URL = os.getenv("INTENT_SERVICE_URL", "http://localhost:8002")
 
 # Rate limiter setup
 limiter = Limiter(key_func=get_remote_address)
 cache_manager: Optional[CacheManager] = None
+stream_manager: Optional[EnhancedStreamManager] = None
 
 
 # Pydantic models
@@ -128,7 +131,7 @@ tokenizer: Optional[tiktoken.Encoding] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize services on startup."""
-    global guards, retriever, llm, tokenizer, cache_manager
+    global guards, retriever, llm, tokenizer, cache_manager, stream_manager
     
     print("🚀 Starting Zibtek Chatbot Server...")
     
@@ -158,6 +161,15 @@ async def lifespan(app: FastAPI):
         # Initialize tokenizer for cost estimation
         tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
         
+        # Initialize enhanced streaming manager
+        print("🎯 Initializing enhanced streaming with intent classification...")
+        stream_manager = EnhancedStreamManager(
+            intent_service_url=INTENT_SERVICE_URL,
+            redis_client=cache_manager.redis_client if cache_manager and hasattr(cache_manager, 'redis_client') else None,
+            enable_fallback=True
+        )
+        print(f"✅ Enhanced streaming initialized (Intent service: {INTENT_SERVICE_URL})")
+        
         print("✅ All services initialized successfully!")
         
     except Exception as e:
@@ -165,6 +177,10 @@ async def lifespan(app: FastAPI):
         raise
     
     yield
+    
+    # Cleanup
+    if stream_manager:
+        await stream_manager.close()
     
     print("👋 Shutting down Zibtek Chatbot Server...")
 
@@ -374,15 +390,46 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             # Initial metadata
             yield f"data: {json.dumps({'type': 'start', 'session_id': session_id})}\n\n"
             
-            # Guardrails check
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Checking content safety...'})}\n\n"
-            
             # Get partition name from request (multi-tenant support)
             partition_name = request.partition_name or "_default"
             namespace = partition_name  # Alias for backward compatibility with other functions
             
+            # STEP 1: INSTANT Intent Classification (no waiting, no blocking)
+            intent_data = None
+            if stream_manager:
+                try:
+                    # This is super fast (cache or keyword fallback, <10ms)
+                    intent_data = await stream_manager.classify_intent(request.question)
+                    
+                    print(f"🎯 Intent: {intent_data['intent']} (confidence: {intent_data['confidence']:.2f}, source: {intent_data['source']})")
+                    
+                    # Send intent immediately
+                    yield f"data: {json.dumps({
+                        'type': 'intent_detected',
+                        'intent': intent_data['intent'],
+                        'confidence': intent_data['confidence'],
+                        'source': intent_data['source']
+                    })}\n\n"
+                    
+                    # IMMEDIATELY start streaming FAKE loading messages (hallucination for UX)
+                    loading_messages = stream_manager.get_loading_messages(intent_data['intent'])
+                    for i, msg in enumerate(loading_messages[:2]):  # Show 2 fake messages quickly
+                        yield f"data: {json.dumps({
+                            'type': 'loading',
+                            'message': msg,
+                            'step': i + 1,
+                            'intent': intent_data['intent']
+                        })}\n\n"
+                        await asyncio.sleep(0.3)  # Quick pace for perceived speed
+                    
+                except Exception as e:
+                    print(f"⚠️  Intent classification failed: {e}")
+                    intent_data = {"intent": "general", "confidence": 0.5, "source": "default"}
+            
+            # Guardrails check (runs independently, doesn't block anything)
             # Pass partition_name to guardrails for multi-tenant scope checking
             is_oos, reason = guards.is_out_of_scope(request.question, partition_name)
+            
             if is_oos:
                 warning_response = guards.get_out_of_scope_message()
                 
@@ -427,8 +474,8 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
                 yield f"data: {json.dumps({'type': 'complete', 'citations': [], 'is_out_of_scope': True, 'processing_time_ms': int((time.time() - start_time) * 1000)})}\n\n"
                 return
             
-            # Retrieval
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Searching knowledge base...'})}\n\n"
+            # STEP 2: REAL Retrieval (fake loading already shown above)
+            # No status message needed - user already saw loading messages
             
             # Initialize retrieval steps tracking
             retrieval_steps = {
@@ -464,6 +511,14 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             retrieval_steps["method"] = "Milvus Hybrid (dense + BM25 + RRF)"
             
             print(f"✅ Milvus hybrid retrieval complete: {len(docs)} documents from partition '{partition_name}'")
+            
+            # STEP 3: Show REAL retrieval progress (actual data, not fake)
+            if stream_manager and len(docs) > 0:
+                try:
+                    progress_msg = await stream_manager.stream_retrieval_progress(len(docs), partition_name)
+                    yield f"data: {progress_msg}\n\n"
+                except Exception as e:
+                    print(f"⚠️  Retrieval progress error: {e}")
 
             # Filter high-confidence docs and limit to top 5
             filtered_docs = docs[:5]  # Take top 5 instead of filtering by score
@@ -471,6 +526,14 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             # Step 3: Rerank documents for better precision (optional)
             rerank_scores = {}
             if RERANK_ENABLED and len(docs) > 5:
+                # STEP 4: Show reranking progress
+                if stream_manager:
+                    try:
+                        rerank_msg = await stream_manager.stream_reranking_progress(len(docs), 5)
+                        yield f"data: {rerank_msg}\n\n"
+                    except Exception as e:
+                        print(f"⚠️  Reranking progress error: {e}")
+                
                 try:
                     print(f"🎯 Reranking {len(docs)} documents with Cohere...")
                     filtered_docs, rerank_scores = rerank_with_scores(request.question, docs, top_n=5)
@@ -518,9 +581,7 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
                 yield f"data: {json.dumps({'type': 'complete', 'citations': [], 'is_out_of_scope': True, 'processing_time_ms': int((time.time() - start_time) * 1000)})}\n\n"
                 return
             
-            # Generate response
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
-            
+            # STEP 4: Start actual generation (no fake status)
             # Get conversation history for context (if session exists)
             conversation_history = ""
             if request.session_id:
@@ -574,6 +635,14 @@ async def chat_stream(request: ChatStreamRequest, http_request: Request) -> Stre
             # Count input tokens for cost tracking and logging
             input_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
             print(f"💰 Input tokens: {input_tokens}")
+            
+            # STEP 5: Show generation preview
+            if stream_manager:
+                try:
+                    generation_msg = await stream_manager.stream_generation_preview()
+                    yield f"data: {generation_msg}\n\n"
+                except Exception as e:
+                    print(f"⚠️  Generation preview error: {e}")
             
             # Stream the response
             full_response = ""
