@@ -217,7 +217,7 @@ def create_website(website_data: WebsiteCreate) -> Optional[WebsiteResponse]:
         print(f"❌ Organization {website_data.org_id} not found")
         return None
     
-    namespace = create_namespace(org.slug, website_data.url)
+    namespace = create_namespace(org.slug)
     
     data = {
         "org_id": website_data.org_id,
